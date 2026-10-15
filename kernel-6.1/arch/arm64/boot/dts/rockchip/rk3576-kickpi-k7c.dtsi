@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2024 Rockchip Electronics Co., Ltd.
+ *
+ */
+
+#include <dt-bindings/usb/pd.h>
+
+
+#include "rk3576.dtsi"
+#include "rk3576-kickpi-evb.dtsi"
+#include "rk3576-rk806.dtsi"
+
+#include "rk3576-kickpi-lcd-hdmi.dtsi"
+
+// #include "rk3576-kickpi-lcd-mipi-8-800-1280-MX080B2140.dtsi"
+// #include "rk3576-kickpi-lcd-mipi-10.1-800-1280-AT101DS40I.dtsi"
+// #include "rk3576-kickpi-lcd-mipi-10.1-800-1280-MX101BA1340.dtsi"
+#include "rk3576-kickpi-lcd-mipi-5-720-1280-F050008M01.dtsi"
+
+/* PHASE1: DP / 有线网 / PCIe / 扩展座 / 红外 / 摄像头 暂不启用 */
+// #include "rk3576-kickpi-lcd-dp.dtsi"
+
+#include "rk3576-kickpi-k7c-wifi.dtsi"
+// #include "rk3576-kickpi-ethernet-gmac0.dtsi"
+// #include "rk3576-kickpi-combopyh0-pcie.dtsi"
+
+// #include "rk3576-kickpi-k7c-extend-40pin.dtsi"
+// #include "rk3576-kickpi-ir.dtsi"
+
+// #include "rk3576-kickpi-k7c-cam0.dtsi"
+// #include "rk3576-kickpi-k7c-cam1.dtsi"
+// #include "rk3576-kickpi-k7c-cam3.dtsi"
+
+/ {
+	es8388_sound: es8388-sound {
+		status = "disabled";
+		compatible = "rockchip,multicodecs-card";
+		rockchip,card-name = "rockchip-es8388";
+		hp-det-gpio = <&gpio0 RK_PD3 GPIO_ACTIVE_HIGH>;
+		io-channels = <&saradc 3>;
+		io-channel-names = "adc-detect";
+		keyup-threshold-microvolt = <1800000>;
+		poll-interval = <100>;
+		spk-con-gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_HIGH>;
+		//hp-con-gpio = <&gpio0 RK_PD3 GPIO_ACTIVE_HIGH>;
+		rockchip,pre-power-on-delay-ms = <30>;
+		rockchip,post-power-down-delay-ms = <40>;
+		rockchip,format = "i2s";
+		rockchip,mclk-fs = <256>;
+		rockchip,cpu = <&sai1>;
+		rockchip,codec = <&es8388>;
+		rockchip,audio-routing =
+			"Headphone", "LOUT1",
+			"Headphone", "ROUT1",
+			"Speaker", "LOUT2",
+			"Speaker", "ROUT2",
+			//"Headphone", "Headphone Power",
+			//"Headphone", "Headphone Power",
+			"Speaker", "Speaker Power",
+			"Speaker", "Speaker Power",
+			"LINPUT1", "Main Mic",
+			"LINPUT2", "Main Mic",
+			"RINPUT1", "Headset Mic",
+			"RINPUT2", "Headset Mic";
+		pinctrl-names = "default";
+		pinctrl-0 = <&hp_det>;
+		play-pause-key {
+			label = "playpause";
+			linux,code = <KEY_PLAYPAUSE>;
+			press-threshold-microvolt = <2000>;
+		};
+	};
+
+	pdmics: dummy-codec {
+		status = "disabled";
+		compatible = "rockchip,dummy-codec";
+		#sound-dai-cells = <0>;
+	};
+
+	pdm_mic_array: pdm-mic-array {
+		status = "disabled";
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "rockchip,pdm-mic-array";
+		simple-audio-card,cpu {
+			sound-dai = <&pdm1>;
+		};
+		simple-audio-card,codec {
+			sound-dai = <&pdmics>;
+		};
+	};
+
+	vcc_1v8_s0: vcc-1v8-s0 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_1v8_s0";
+		regulator-boot-on;
+		regulator-always-on;
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&vcc_1v8_s3>;
+	};
+
+	vcc_3v3_s0: vcc-3v3-s0 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_3v3_s0";
+		regulator-boot-on;
+		regulator-always-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&vcc_3v3_s3>;
+	};
+
+	// vcc5v0_host: vcc5v0-host {
+	// 	compatible = "regulator-fixed";
+	// 	regulator-name = "vcc5v0_host";
+	// 	regulator-boot-on;
+	// 	regulator-always-on;
+	// 	regulator-min-microvolt = <5000000>;
+	// 	regulator-max-microvolt = <5000000>;
+	// 	enable-active-high;
+	// 	gpio = <&gpio4 RK_PC4 GPIO_ACTIVE_HIGH>;
+	// 	vin-supply = <&vcc5v0_device>;
+	// 	pinctrl-names = "default";
+	// 	pinctrl-0 = <&usb_host_pwren>;
+	// };
+
+	vbus5v0_typec: vbus5v0-typec {
+		compatible = "regulator-fixed";
+		regulator-name = "vbus5v0_typec";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		enable-active-high;
+		vin-supply = <&vcc5v0_device>;
+	};
+};
+
+&i2c3 {
+	status = "okay";
+	es8388: es8388@10 {
+		status = "disabled";
+		#sound-dai-cells = <0>;
+		compatible = "everest,es8388", "everest,es8323";
+		reg = <0x10>;
+		clocks = <&mclkout_sai1>;
+		clock-names = "mclk";
+		assigned-clocks = <&mclkout_sai1>;
+		assigned-clock-rates = <12288000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&sai1m0_mclk>;
+	};
+};
+
+&pinctrl {
+	headphone {
+		hp_det: hp-det {
+			rockchip,pins = <0 RK_PD3 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
+	usb {
+		usb_host_pwren: usb-host-pwren {
+			rockchip,pins = <4 RK_PC4 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+};
+
+
+&sai1 {
+	status = "disabled";
+	pinctrl-names = "default";
+	pinctrl-0 = <&sai1m0_lrck
+		     &sai1m0_sclk
+		     &sai1m0_sdi0
+		     &sai1m0_sdo0>;
+};
+
+&sai2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&sai2m0_lrck
+		     &sai2m0_sclk
+		     &sai2m0_sdi
+		     &sai2m0_sdo>;
+};
+
+&sdmmc {
+	pinctrl-0 = <&sdmmc0_clk &sdmmc0_cmd &sdmmc0_det &sdmmc0_bus4 &sdmmc0_pwren>;
+	status = "okay";
+};
+
+&spdif_tx3 {
+	status = "okay";
+};
+
+&u2phy0 {
+	status = "okay";
+};
+
+&u2phy0_otg {
+	phy-supply = <&vbus5v0_typec>;
+};
+
+&u2phy1_otg {
+	// phy-supply = <&vcc5v0_host>;
+};
+
+&leds {
+	USB_HOST_5V: gpio4-c4 {
+        label = "USB_HOST_5V";
+		gpios = <&gpio4 RK_PC4 GPIO_ACTIVE_HIGH>;
+		default-state = "on";
+	};
+};
+
+&usbdp_phy {
+	rockchip,dp-lane-mux = <2 3>;
+	status = "okay";
+};
+
+&usb_drd0_dwc3 {
+	dr_mode = "otg";
+	extcon = <&u2phy0>;
+	status = "okay";
+};
+
+&usb_drd1_dwc3 {
+	dr_mode = "host";
+	status = "okay";
+};
+
