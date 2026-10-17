@@ -9,4 +9,11 @@ LLM_PANEL_SITE_METHOD = local
 # Package name is lv_drivers (underscore), same as rkpartybox.mk — not lv-drivers.
 LLM_PANEL_DEPENDENCIES = lvgl lv_drivers freetype libdrm libevdev
 
+# Adobe Source Han Sans CN SubsetOTF Regular (~8MB) — enough for UI + dialogue CJK.
+define LLM_PANEL_INSTALL_FONT
+	$(INSTALL) -D -m 0644 $(@D)/fonts/SourceHanSansCN-Regular.otf \
+		$(TARGET_DIR)/usr/share/fonts/source-han-sans-cn/SourceHanSansCN-Regular.otf
+endef
+LLM_PANEL_POST_INSTALL_TARGET_HOOKS += LLM_PANEL_INSTALL_FONT
+
 $(eval $(cmake-package))

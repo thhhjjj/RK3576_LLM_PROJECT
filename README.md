@@ -1,5 +1,7 @@
 # RK3576 LLM — 差分包（makediff）使用说明
 
+> 同步状态（2026-10-17）：PHASE1 面板/中文字体/裁剪 Buildroot/`llm_ctrl` 等已齐。明细见 `kernel-6.1/markdown/project/PHASE/PHASE1_DID.md`。
+
 日常**只在本目录（或云端轻量仓 `RK3576_LLM_PROJECT`）提交**。完整 SDK（~20GB）不当日常推送目标。
 
 本目录是相对 KickPi K7C Buildroot SDK 的 **overlay**：保持与 SDK 相同的相对路径，用脚本一键落到 Ubuntu 编译机。
@@ -122,6 +124,7 @@ rm -f buildroot/output/rockchip_rk3576_kickpi_k7c_llm/.config
 | `lvgl` download 404 / GitHub 拒连 | VM 网络 | `buildroot/dl/...tar.gz` 离线包 |
 | `undefined reference` FT_* | 未链 freetype | `CMakeLists` + DEPENDENCIES |
 | `undefined reference` evdev_* | Rockchip `lv_drivers` 未编 USE_EVDEV | 自带 `llm_panel/evdev.c` |
+| 中文方块 / 乱码 | 未装字库 | `llm_panel/fonts/SourceHanSansCN-Regular.otf` → `/usr/share/fonts/source-han-sans-cn/`（~8MB CN Subset） |
 
 落地后若 SDK 里仍是旧文件，用强制拷贝再验收（见上一节 `grep`），不要只信 makediff 目录本身。
 

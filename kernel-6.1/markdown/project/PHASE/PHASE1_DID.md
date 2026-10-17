@@ -11,12 +11,16 @@
 | 3. 点亮 | **已过**（板上背光亮、MIPI 画面正常） |
 | 4. 触摸 | **已过**（probe 成功；修坐标后指哪点哪；暂保持竖屏） |
 | 5. WiFi / 蓝牙 | **已过**。芯片是 Seekwave SWT6621S（SDIO `1ffe:6621`，`swt6621s_wifi.ko`），不是 AP6256。重启后 `wpa_state=COMPLETED`，`wlan0` 为 `192.168.31.89`，`hci0` `Bus: SDIO` 且 `UP`。见下文 §6 / G–I |
-| 6. rootfs 裁剪 | **已过**。裁剪 Buildroot 已刷；屏/触摸仍在；WiFi/BT 重启保持。LVGL 已起后需再记一次 `MemAvailable` 作第二阶段基线（步骤 9） |
+| 6. rootfs 裁剪 | **已过**。裁剪 Buildroot 已刷；屏/触摸仍在；WiFi/BT 重启保持 |
 | 7. `llm_ctrl.ko` | **已过**。`thermal_zone4`/`npu-thermal`；sysfs `temp_c`；genetlink `OVERTEMP` 已测；`/lib/modules/llm_ctrl.ko` + `S39llm_ctrl` 开机自载 |
-| 8. LVGL 面板 | **已过**。`llm_panel` 进 rootfs，`S90llm_panel` 自启；板上 **能显示、能触摸**（2026-10-17）。指标 1s 刷新 + Compress/模式开关可点（只改 UI 态）。**中文字体尚未做**（必要，标签仍英文）；富 UI 留后阶段 |
-| 9. 收口 | 未做：记 LVGL 运行时 `MemAvailable`；中文字体子集；确认六项指标数值合理后关 PHASE1 |
+| 8. LVGL 面板 | **已过**。`llm_panel` 进 rootfs，`S90llm_panel` 自启；板上 **能显示、能触摸**（2026-10-17）。指标 1s 刷新 + 压缩/本地·云端可点（只改 UI 态）。富 UI / 拼音输入留后阶段 |
+| 9. 收口 | **内存基线已记**；**中文字体已过**（屏上汉字，2026-10-17）。其余五项指标目视确认后可关 PHASE1 |
+
+**第二阶段内存基线（LVGL+中文已跑，2026-10-17）**：面板显示 `118 / 3898 MB`（已用/总计）⇒ **MemAvailable ≈ 3780 MB**（`/proc` 复核 `3870700 kB`）。LVGL 未起时 ≈3823 MB Available。
 
 另：K7C 无关 include 与 EVB 编解码等节点已关；Ubuntu 上只刷 `boot.img` 即可验证内核/DTS。
+
+日常差分：**以 `Desktop/makediff`（或云端 `RK3576_LLM_PROJECT`）为提交源**；用法见 overlay 内 `README.md` / `APPLY_ON_UBUNTU.md`。
 
 ---
 
@@ -59,16 +63,20 @@ kernel-6.1/drivers/input/touchscreen/focaltech_touch/focaltech_core.h
 
 > 说明：本地还有 FTS 编译修复（flash/test/Makefile）在 `2d3c20de1`，曾通过 `makediff` 拷到 Ubuntu 编过；尚未全部镜像进云端轻量仓。需要时用 `makediff` 或再推一轮补齐。
 
-### 同步到 Ubuntu SDK
+### 同步到 Ubuntu SDK（推荐 makediff）
 
 ```bash
-# 在 SDK 根目录
-./scripts/git_push_must_change.sh
-# 或指定已有 overlay（如 makediff）
-./scripts/git_push_must_change.sh /path/to/makediff
+# 先把 Mac Desktop/makediff 整份覆盖到 SDK/makediff/
+cd ~/rk3576/rk3576_sdk/rk3576-linux
+chmod +x makediff/git_push_must_change.sh
+./makediff/git_push_must_change.sh makediff
+
+# 落地后必须看 SDK 路径，不要只看 makediff
+grep -n 'LLM 终端\|内存' kernel-6.1/markdown/project/llm_panel/ui.c
+ls -lh kernel-6.1/markdown/project/llm_panel/fonts/SourceHanSansCN-Regular.otf
 ```
 
-旧文件进 `lastonce/<相对路径>`；只刷 `output/firmware/boot.img`（或 `kernel/boot.img`）即可验内核改动。
+旧文件进 `lastonce/<相对路径>`。只改内核时刷 `boot.img`；面板/字库改完刷 `rootfs`（§P）。
 
 ---
 
@@ -159,7 +167,13 @@ kernel-6.1/drivers/input/touchscreen/focaltech_touch/focaltech_core.h
 | 内存 | `MemAvailable: 3823600 kB`（尚无 LVGL；步骤 9 再记正式基线） |
 | CMA | 未改 |
 
-产物：`output/buildroot/images/rootfs.ext2`（≈860M）→ 拷成 `rootfs.img`；`rkdeveloptool`：`adb reboot loader` → `wlx rootfs` → `rd`。
+产物目录（裁剪配置）：
+
+`buildroot/output/rockchip_rk3576_kickpi_k7c_llm/images/`
+
+（`output/buildroot/images/` 只是 SDK 汇总软链，内容同类。）
+
+刷机备忘见下文 **§P.rootfs.ext2 / ext4**。
 
 ### 8. `llm_ctrl.ko`（外置模块；已过）
 
@@ -190,6 +204,27 @@ kernel-6.1/drivers/input/touchscreen/focaltech_touch/focaltech_core.h
 | 开机加载 | `/lib/modules/llm_ctrl.ko` + `/etc/init.d/S39llm_ctrl`；`adb reboot` 后 `lsmod` 有、`temp_c` 可读 |
 
 日常装板（不重刷）：`adb push` `.ko` 与 `S39llm_ctrl` → `chmod` → `reboot`。下次编 rootfs 前把编好的 `llm_ctrl.ko` 放在源码目录，overlay 会拷进镜像。
+
+### 9. `llm_panel`（LVGL 面板；已过）
+
+源码：`kernel-6.1/markdown/project/llm_panel/`  
+Buildroot：`buildroot/package/llm_panel/` + `products/llm_terminal.config`（`BR2_PACKAGE_LLM_PANEL` 等）  
+启动：`overlays/30-llm_ctrl` 里 `S90llm_panel`
+
+| 文件 | 作用 |
+|---|---|
+| `main.c` | DRM 初始化、`evdev`、1s metrics 定时器 |
+| `ui.c` / `ui.h` | 六项指标 + 对话区 + 压缩/本地·云端；中文标签；指标白字 |
+| `metrics.c` | 读 `/proc/meminfo`、`/proc/stat`、`/proc/rknpu/load`、`llm_ctrl` sysfs、devfreq、`/proc/net/dev` |
+| `evdev.c` / `evdev.h` | Rockchip 风格触摸（`lv_drivers` 未编 USE_EVDEV，自带实现） |
+| `font.c` / `font.h` | FreeType 加载思源 CN Subset |
+| `fonts/SourceHanSansCN-Regular.otf` | ≈8MB，装到 `/usr/share/fonts/source-han-sans-cn/` |
+| `llm_panel.mk` | 依赖 `lvgl lv_drivers freetype libdrm libevdev`；POST_INSTALL 装字体 |
+| `Config.in` | `depends on` DRM/lv_drivers，**不** `select` choice 符号 |
+
+板端验收（2026-10-17）：显示+触摸 OK；`strings` 无旧英文 `LLM Terminal`；字库目录存在；屏上汉字可读。
+
+离线依赖（makediff 已带）：`buildroot/dl/lvgl/lvgl-8.3.0.tar.gz`、`buildroot/dl/lv_drivers/lv_drivers-8.3.0.tar.gz`。
 
 ---
 
@@ -255,13 +290,88 @@ heredoc 粘贴时写成 `psk=07210d000721"` → parse 失败。两边都要有 `
 
 `S39` 已在约 4s 加载（dmesg），但 `adb shell` 与后面的 `lsmod` 分行粘贴时，`lsmod` 可能跑在 Mac 上得到空。用一行：`adb shell 'lsmod | grep llm_ctrl; cat .../temp_c'`。
 
+### P. rootfs.ext2 / ext4 —— 刷机拷贝备忘（必看）
+
+编完 rootfs 后，目录里常见：
+
+```text
+buildroot/output/rockchip_rk3576_kickpi_k7c_llm/images/
+  rootfs.ext2      ← 真正的大文件（实体，约一百多 MB～更大）
+  rootfs.ext4      ← 软链接，指向 rootfs.ext2（只有十几个字节）
+  rootfs.cpio / .gz / .squashfs / .tar  ← 别的格式，wlx rootfs 不用
+```
+
+要点：
+
+1. **`ext4` 不是另一份镜像**，只是名字好看的软链；内容就是 `ext2`。
+2. `cp rootfs.ext4 ~/Desktop/xxx.ext4` 会**跟着链接把 ext2 的内容拷成普通文件**（桌面上是完整镜像，不再是链接）。
+3. 想写死实体文件：`cp -vL rootfs.ext4 …` 或直接 `cp rootfs.ext2 …`。
+4. Mac 刷机（板子先 Loader）：
+
+```bash
+rkdeveloptool ld
+rkdeveloptool wlx rootfs /Users/moments/Desktop/rootfs-k7c-llm.ext4
+rkdeveloptool rd
+```
+
+5. 拷之前确认这次编的是 **k7c_llm**，且面板+字库在 target 里：
+
+```bash
+ls -lh buildroot/output/rockchip_rk3576_kickpi_k7c_llm/target/usr/bin/llm_panel
+ls -lh buildroot/output/rockchip_rk3576_kickpi_k7c_llm/target/usr/share/fonts/source-han-sans-cn/
+ls -lh buildroot/output/rockchip_rk3576_kickpi_k7c_llm/images/rootfs.ext2
+```
+
+### Q. Buildroot：`No rule to make target 'lv-drivers'`
+
+依赖名写成了带连字符的 `lv-drivers`。本树包名是目录名 **`lv_drivers`**（与 `rkpartybox.mk` 一致）。`llm_panel.mk` 已改。
+
+### R. Kconfig：`recursive dependency detected`（`lvgl/Config.in:35`）
+
+`Config.in` 里 `select BR2_PACKAGE_LVGL_USE_DRM` / `LV_DRIVERS_USE_DRM` 撞上 choice / `default y if`。改为只 `depends on`，DRM 由 `llm_terminal.config` 打开。
+
+### S. `lvgl` 下载失败（GitHub / sources.buildroot 404）
+
+VM 拉不到 GitHub。makediff 带离线 `buildroot/dl/lvgl|lv_drivers/*.tar.gz`，落地后免下。
+
+### T. 链接：`FT_*` / `evdev_*` undefined
+
+- `liblvgl` 需 **freetype**：`CMakeLists` + DEPENDENCIES 补上。  
+- Rockchip `lv_drivers` 未编 USE_EVDEV：面板自带 `evdev.c`（libevdev），不再链 stock `lv_drivers` 的 evdev。
+
+### U. 刷了 rootfs 仍是英文 `Mem` / 无字库
+
+常见原因：① VM 上 makediff 不是 Mac 最新；② `git_push_must_change.sh` Permission denied 没落地；③ 只看了 makediff、SDK `ui.c`/fonts 仍旧；④ 刷了旧 Desktop 镜像。  
+正确顺序：同步 makediff → `chmod +x` 落地 → 确认 SDK 有「内存」和 8M otf → 重编 → **验 target 有字库** → 再 `cp -vL` 到桌面 → `wlx`。
+
+### V. zsh：`parse error near ')'`
+
+注释写成 `# 1)` 被 zsh 解析。adb 命令不要用带括号的编号注释。
+
+---
+
+## makediff 当前应含内容（git 差分包）
+
+```text
+README.md / APPLY_ON_UBUNTU.md / PROJECT.md
+git_push_must_change.sh + scripts/
+device/.../rockchip_rk3576_kickpi_k7c_buildroot_defconfig
+buildroot/configs/...llm* + products/llm_terminal.config
+buildroot/package/llm_panel/ + package/lvgl/Config.in
+buildroot/board/.../overlays/30-llm_ctrl/   # S39llm_ctrl S90llm_panel prepare.sh
+buildroot/dl/lvgl/*.tar.gz + dl/lv_drivers/*.tar.gz
+kernel-6.1/... dtsi + defconfig + FTS 修复
+kernel-6.1/markdown/project/llm_ctrl/ + llm_panel/（含 fonts/*.otf）
+kernel-6.1/markdown/project/PHASE/*.md + project.md
+llm_ctrl_autoload/llm_ctrl.ko
+```
+
 ---
 
 ## 驱动侧结论（截至本记录）
 
-- **已过**: MIPI、FTS、Seekwave、裁剪 Buildroot、`llm_ctrl`（sysfs + genetlink + 开机自动加载）。
-- **未写**: LVGL。
-- **下一步**: PHASE1 步骤 8 LVGL；横屏暂不做。正式 `MemAvailable` 基线等 LVGL 起来后再记。
+- **已过**: MIPI、FTS、Seekwave、裁剪 Buildroot、`llm_ctrl`、`llm_panel`（显示+触摸+中文白字+字库）。
+- **下一步**: 目视确认六项指标后关 PHASE1；再进 **模型/外设框架**（RKLLM）。拼音输入法不进前两阶段。
 
 ---
 
@@ -270,3 +380,5 @@ heredoc 粘贴时写成 `psk=07210d000721"` → parse 失败。两边都要有 `
 1. `git reset --hard HEAD` 清误脏  
 2. 本仓 `core.filemode=false`  
 3. macOS 大小写冲突头文件 `skip-worktree`  
+4. 日常提交在 **makediff**，改完同步进 makediff 再推轻量仓  
+

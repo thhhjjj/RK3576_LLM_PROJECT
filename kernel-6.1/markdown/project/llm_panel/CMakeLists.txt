@@ -16,6 +16,7 @@ add_executable(llm_panel
 	ui.c
 	metrics.c
 	evdev.c
+	font.c
 )
 
 target_link_libraries(llm_panel

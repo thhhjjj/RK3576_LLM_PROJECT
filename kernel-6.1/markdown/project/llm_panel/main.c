@@ -13,6 +13,7 @@
 #include "lv_drivers/display/drm.h"
 
 #include "evdev.h"
+#include "font.h"
 #include "metrics.h"
 #include "ui.h"
 
@@ -65,6 +66,8 @@ int main(int argc, char **argv)
 
 	metrics_init();
 	hal_init();
+	if (font_init() != 0)
+		fprintf(stderr, "llm_panel: using montserrat fallback (no CJK)\n");
 	ui_create();
 	lv_timer_create(metrics_timer_cb, 1000, NULL);
 

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "font.h"
 #include "lvgl/lvgl.h"
 
 static lv_obj_t *lbl_mem;
@@ -32,13 +33,19 @@ static void set_label(lv_obj_t *lbl, const char *txt)
 		lv_label_set_text(lbl, txt);
 }
 
+static void style_text(lv_obj_t *obj, const lv_font_t *font, uint32_t color)
+{
+	lv_obj_set_style_text_font(obj, font, 0);
+	lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
+}
+
 static void on_compress(lv_event_t *e)
 {
 	lv_obj_t *btn = lv_event_get_target(e);
 	compress_on = !compress_on;
 	lv_obj_t *lab = lv_obj_get_child(btn, 0);
 	if (lab)
-		lv_label_set_text(lab, compress_on ? "Compress:ON" : "Compress:OFF");
+		lv_label_set_text(lab, compress_on ? "压缩:开" : "压缩:关");
 }
 
 static void on_mode(lv_event_t *e)
@@ -46,19 +53,19 @@ static void on_mode(lv_event_t *e)
 	lv_obj_t *sw = lv_event_get_target(e);
 	mode_cloud = lv_obj_has_state(sw, LV_STATE_CHECKED) ? 1 : 0;
 	if (lbl_mode)
-		lv_label_set_text(lbl_mode, mode_cloud ? "Cloud" : "Local");
+		lv_label_set_text(lbl_mode, mode_cloud ? "云端" : "本地");
 }
 
 static lv_obj_t *add_metric_row(lv_obj_t *parent, const char *title, int y)
 {
 	lv_obj_t *t = lv_label_create(parent);
 	lv_label_set_text(t, title);
-	lv_obj_set_style_text_font(t, &lv_font_montserrat_14, 0);
+	style_text(t, font_small(), 0xffffff);
 	lv_obj_set_pos(t, 16, y);
 
 	lv_obj_t *v = lv_label_create(parent);
 	lv_label_set_text(v, "—");
-	lv_obj_set_style_text_font(v, &lv_font_montserrat_14, 0);
+	style_text(v, font_body(), 0xffffff);
 	lv_obj_set_pos(v, 200, y);
 	return v;
 }
@@ -69,19 +76,18 @@ void ui_create(void)
 	lv_obj_set_style_bg_color(scr, lv_color_hex(0x101418), 0);
 
 	lv_obj_t *title = lv_label_create(scr);
-	lv_label_set_text(title, "LLM Terminal");
-	lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
-	lv_obj_set_style_text_color(title, lv_color_hex(0xe8e8e8), 0);
+	lv_label_set_text(title, "LLM 终端");
+	style_text(title, font_title(), 0xe8e8e8);
 	lv_obj_set_pos(title, 16, 12);
 
-	lbl_mem = add_metric_row(scr, "Mem", 48);
+	lbl_mem = add_metric_row(scr, "内存", 48);
 	lbl_cpu = add_metric_row(scr, "CPU", 72);
-	lbl_npu_load = add_metric_row(scr, "NPU load", 96);
-	lbl_npu_temp = add_metric_row(scr, "NPU temp", 120);
+	lbl_npu_load = add_metric_row(scr, "NPU 负载", 96);
+	lbl_npu_temp = add_metric_row(scr, "NPU 温度", 120);
 	lbl_gpu = add_metric_row(scr, "GPU", 144);
-	lbl_net = add_metric_row(scr, "Net up/dn", 168);
+	lbl_net = add_metric_row(scr, "上行/下行", 168);
 
-	lbl_ctx = add_metric_row(scr, "Context", 200);
+	lbl_ctx = add_metric_row(scr, "上下文", 200);
 	lbl_tps = add_metric_row(scr, "token/s", 224);
 	set_label(lbl_ctx, "—");
 	set_label(lbl_tps, "—");
@@ -89,7 +95,9 @@ void ui_create(void)
 	lv_obj_t *dlg = lv_textarea_create(scr);
 	lv_obj_set_size(dlg, 688, 720);
 	lv_obj_set_pos(dlg, 16, 260);
-	lv_textarea_set_text(dlg, "(dialog)\nPHASE1: tap only changes button state.");
+	lv_obj_set_style_text_font(dlg, font_body(), 0);
+	lv_textarea_set_text(dlg,
+		"（对话区）\nPHASE1：点击只改变按钮状态，不加载模型。");
 	lv_textarea_set_cursor_click_pos(dlg, false);
 	lv_obj_clear_flag(dlg, LV_OBJ_FLAG_CLICK_FOCUSABLE);
 
@@ -99,7 +107,8 @@ void ui_create(void)
 	lv_obj_add_event_cb(btn_compress, on_compress, LV_EVENT_CLICKED, NULL);
 	{
 		lv_obj_t *lab = lv_label_create(btn_compress);
-		lv_label_set_text(lab, "Compress:OFF");
+		lv_label_set_text(lab, "压缩:关");
+		lv_obj_set_style_text_font(lab, font_body(), 0);
 		lv_obj_center(lab);
 	}
 
@@ -108,12 +117,13 @@ void ui_create(void)
 	lv_obj_add_event_cb(sw_mode, on_mode, LV_EVENT_VALUE_CHANGED, NULL);
 
 	lbl_mode = lv_label_create(scr);
-	lv_label_set_text(lbl_mode, "Local");
+	lv_label_set_text(lbl_mode, "本地");
+	style_text(lbl_mode, font_body(), 0xe8e8e8);
 	lv_obj_set_pos(lbl_mode, 320, 1036);
 
 	lbl_overtemp = lv_label_create(scr);
 	lv_label_set_text(lbl_overtemp, "");
-	lv_obj_set_style_text_color(lbl_overtemp, lv_color_hex(0xff5555), 0);
+	style_text(lbl_overtemp, font_body(), 0xff5555);
 	lv_obj_set_pos(lbl_overtemp, 16, 1088);
 	lv_obj_add_flag(lbl_overtemp, LV_OBJ_FLAG_HIDDEN);
 }
@@ -140,7 +150,7 @@ void ui_update_metrics(const struct llm_metrics *m)
 		set_label(lbl_npu_load, buf);
 	}
 	if (m->valid & METRICS_HAVE_NPU_TEMP) {
-		snprintf(buf, sizeof(buf), "%d C", m->npu_temp_c);
+		snprintf(buf, sizeof(buf), "%d ℃", m->npu_temp_c);
 		set_label(lbl_npu_temp, buf);
 	}
 	if (m->valid & METRICS_HAVE_GPU) {
@@ -159,7 +169,7 @@ void ui_show_overtemp(int temp_c)
 {
 	char buf[64];
 
-	snprintf(buf, sizeof(buf), "OVERTEMP %d C", temp_c);
+	snprintf(buf, sizeof(buf), "超温 %d ℃", temp_c);
 	set_label(lbl_overtemp, buf);
 	lv_obj_clear_flag(lbl_overtemp, LV_OBJ_FLAG_HIDDEN);
 }
