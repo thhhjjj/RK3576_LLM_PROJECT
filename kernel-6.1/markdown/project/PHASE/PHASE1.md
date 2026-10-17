@@ -45,21 +45,18 @@ NPU 节点不用在这一阶段新写。K7C 包含的 [rk3576-kickpi-evb.dtsi](.
 
 ## WiFi 和蓝牙
 
-沿用 [rk3576-kickpi-k7c-wifi.dtsi](../../../arch/arm64/boot/dts/rockchip/rk3576-kickpi-k7c-wifi.dtsi)。GPIO 和 UART 与板子一致就不动。不一致只改脚和 pinctrl，蓝牙 pinctrl 子节点名仍以 `uart` 开头，否则 `wifibt-init.sh` 会找错串口。
+本机实测是 **Seekwave SWT6621S**（SDIO `1ffe:6621`，`swt6621s_wifi.ko`），不是 K7C 设备树里的 AP6256。WiFi 和蓝牙都走 SDIO，`hci0` 的 `Bus` 是 SDIO。记录在 [PHASE1_DID.md](./PHASE1_DID.md) §6。
 
-rootfs 里要有这三份文件，它们来自 SDK 的 `external/rkwifibt`，不在内核树里：
-
-- `fw_bcm43456c5_ag.bin`
-- `nvram_ap6256.txt`
-- `BCM4345C5.hcd`
+树里的 [rk3576-kickpi-k7c-wifi.dtsi](../../../arch/arm64/boot/dts/rockchip/rk3576-kickpi-k7c-wifi.dtsi) 仍描述博通 `bcmdhd` 和 UART4 蓝牙，不要按那个去换驱动或下载 `BCM4345C5.hcd`。
 
 完成的样子：
 
+- `wpa_cli status` 为 `wpa_state=COMPLETED`
 - `ip addr` 里 `wlan0` 有 IPv4，默认路由能 `ping` 通网关
-- `wpa_cli status` 为 `COMPLETED`
-- `hciconfig` 或 `bluetoothctl show` 能看到 `hci0`
+- `hciconfig` 能看到 `hci0`
+- 重启后不用手工再执行 `wpa_supplicant` / `dhclient`
 
-`LOWER_UP` 不算连上 AP。内核 `CONFIG_BT_HCIUART` 保持关闭，继续用 `brcm_patchram_plus1` 下载 `BCM4345C5.hcd`。
+`LOWER_UP` 不算连上 AP。Debian 上用 `/etc/wpa_supplicant.conf` 和 `wlan0-connect.service` 验证过即可；正式 rootfs 改刷裁剪后的 Buildroot，wpa 配置照搬，启动方式改走 Buildroot 的 init（无 systemd 服务文件）。
 
 ## 裁剪
 
@@ -69,8 +66,8 @@ rootfs 里要有这三份文件，它们来自 SDK 的 `external/rkwifibt`，不
 
 - `CONFIG_ROCKCHIP_RKNPU`，以及板级已经 okay 的 NPU 和 IOMMU
 - DRM、Rockchip 显示、MIPI DSI、`simple-panel-dsi`
-- SDIO、`mmc-pwrseq-simple`、rfkill、bcmdhd
-- 蓝牙那路 UART 和 `brcm_patchram_plus1`
+- SDIO，以及本机的 `swt6621s_wifi.ko`
+- 能带起 `hci0` 的 Seekwave 初始化（不是 `brcm_patchram_plus1`）
 - 打开 `CONFIG_ROCKCHIP_RKNPU_PROC_FS`，使 `/proc/rknpu/load` 存在。UI 读这个文件，不读 debugfs
 
 rootfs 里留下后面阶段要用、但这一阶段可以先不调用的包：`wpa_supplicant`、`bluez5`、`libdrm`、`librkllm`、`libwebsockets`、`libcurl`（带 CA 证书）。删掉它们不算裁剪完成，算把后阶段的门焊死。
@@ -154,18 +151,18 @@ DRM 全屏，画布 720×1280 竖屏。指标在 LVGL 定时器里读，不另�
 
 ### 5. WiFi 和蓝牙通上
 
-17. 把 `fw_bcm43456c5_ag.bin`、`nvram_ap6256.txt`、`BCM4345C5.hcd` 放进 rootfs 固件目录。文件从 SDK `external/rkwifibt` 取。
-18. 开机跑现有的 `wifibt-init`。SDIO 上出现 `02d0:a9bf`，加载 `bcmdhd.ko` 后有 `wlan0`。
-19. 写一份 `wpa_supplicant` 配置，开机自动连接指定 AP。断线后的自动重连留到第三阶段。
+17. 确认 Debian rootfs 里已有 Seekwave 驱动。`wifibt-init.sh start` 应打印 `Seekwave` / `1ffe:6621` / `swt6621s_wifi.ko`，并出现 `wlan0`。不要改去加载 `bcmdhd` 或拷 AP6256 的三份博通固件。
+18. 用 `wpa_cli scan_results` 里的 SSID 原文写 `/etc/wpa_supplicant.conf`。WPA2+WPA3 混合热点写 `key_mgmt=WPA-PSK SAE`。
+19. 用 `wlan0-connect.service` 在 `wlan0` 出现后再启动 `wpa_supplicant` 和 `dhclient`。断线后的重连策略留到第三阶段。
 20. `wpa_cli status` 为 `wpa_state=COMPLETED`，`wlan0` 有 IPv4，`ping` 通网关。
-21. `brcm_patchram_plus1` 下载 `BCM4345C5.hcd` 之后，`hciconfig` 或 `bluetoothctl show` 能看到 `hci0`。
+21. `hciconfig` 能看到 `hci0`，且 `Bus: SDIO`。不做配对、不做 GATT。
 22. 重启再查一次第 20、21 步，确认不用手工 `insmod`、不用手工敲连接命令。
 
-### 6. rootfs 裁剪
+### 6. rootfs 裁剪（改刷 Buildroot，不在 Debian 上 apt 删）
 
-23. 删掉用不到的包。留下 `wpa_supplicant`、`bluez5`、`libdrm`、`librkllm`、`libwebsockets`、`libcurl` 和 CA 证书，以及上面三份固件。
-24. 重刷 rootfs。重复第 11、12、16、20、21 步，画面、触摸、WiFi、`hci0` 都还在。
-25. 确认没有改过 CMA。
+23. lunch `rockchip_rk3576_kickpi_k7c_buildroot_defconfig`。它把 `RK_BUILDROOT_BASE_CFG` 指到裁剪版 `rockchip_rk3576_kickpi_k7c_llm_defconfig`：去掉 Chromium / Weston / GStreamer / camera / audio / 压测套件，留下 `wpa_supplicant`、`bluez5`、`rkwifibt`（Seekwave）、`libdrm`、`libwebsockets`、`libcurl`、CA、`rknpu2`。`librkllm` 本树没有 Buildroot 包，第二阶段用 overlay 塞。
+24. `./build.sh rootfs`（或 `build.sh all` 里只取 rootfs）。只刷 rootfs，不刷 boot/U-Boot。把 Debian 上已验证的 `/etc/wpa_supplicant.conf` 拷进 Buildroot（Buildroot 无 systemd，用已有 `wifibt-init` / 启动脚本起 `wpa_supplicant` + `dhcpcd`）。
+25. 重复第 11、12、16、20、21 步：画面、触摸、WiFi、`hci0` 都还在。确认没有改过 CMA。
 
 ### 7. `llm_ctrl.ko`
 

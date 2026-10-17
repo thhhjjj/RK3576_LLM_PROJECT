@@ -1,0 +1,13 @@
+config BR2_PACKAGE_LLM_PANEL
+	bool "llm_panel (PHASE1 LVGL terminal UI)"
+	depends on BR2_PACKAGE_LVGL
+	depends on BR2_PACKAGE_LVGL_USE_DRM
+	depends on BR2_PACKAGE_LV_DRIVERS
+	depends on BR2_PACKAGE_LIBDRM
+	# Do NOT select LVGL_USE_DRM / LV_DRIVERS_USE_DRM — those sit in a
+	# choice / default-if chain and cause "recursive dependency detected".
+	# Product llm_terminal.config already sets DRM + lv_drivers.
+	select BR2_PACKAGE_LIBEVDEV
+	help
+	  PHASE1 local LLM terminal panel: DRM 720x1280 metrics + stub
+	  dialog/buttons. No model load, no network sockets.

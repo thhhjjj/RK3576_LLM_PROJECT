@@ -1,6 +1,6 @@
 # RK3576 本地大模型交互终端：可行性
 
-> 对照硬件「RK3576 4GB+32GB、5 寸 MIPI 720×1280、AP6256」、Buildroot + 本树 Linux 6.1，以及五阶段开发顺序做的落地判断。结论先写，后面是依据和必须改的口径。
+> 对照硬件「RK3576 4GB+32GB、5 寸 MIPI 720×1280、Seekwave SWT6621S」、Debian rootfs + 本树 Linux 6.1，以及五阶段开发顺序做的落地判断。结论先写，后面是依据和必须改的口径。早期口径写成 AP6256，已按板端实测改正，见 [PHASE/PHASE1_DID.md](PHASE/PHASE1_DID.md) §6。
 
 ## 结论
 
@@ -41,8 +41,8 @@
 | NPU 内存 | `ROCKCHIP_RKNPU` 依赖 DRM 或 Rockchip CMA heap，默认 `ROCKCHIP_RKNPU_DRM_GEM` | 关 DRM、砍光 CMA，NPU 会起不来。单帧 buffer 省的是几 MB 显存，不能靠它给模型腾内存 |
 | MIPI DSI | `dsi@27d80000`，`compatible = "rockchip,rk3576-mipi-dsi2"`。参考接法是 `simple-panel-dsi` + `panel-init-sequence` | 5 寸屏走这条，不新写 MIPI 控制器驱动 |
 | 5 寸屏 | [`rk3576-kickpi-lcd-mipi-5-720-1280-F050008M01.dtsi`](../arch/arm64/boot/dts/rockchip/rk3576-kickpi-lcd-mipi-5-720-1280-F050008M01.dtsi)：720×1280、4 lane、RGB888、像素时钟 84MHz，DSI 接到 VP1。[`rk3576-kickpi-k7c.dtsi`](../arch/arm64/boot/dts/rockchip/rk3576-kickpi-k7c.dtsi) 第 19 行的 include 目前被注释 | 这就是板上的屏。打开该 include，UI 按 720×1280 做。时序和初始化序列不用再向屏厂要 |
-| AP6256 WiFi | KickPi K7C：SDIO `mmc@2a320000`，`mmc-pwrseq-simple` 管 `WL_REG_ON`，bcmdhd，固件 `fw_bcm43456c5_ag.bin` + `nvram_ap6256.txt`。细节在 [wifi_device.md](wifi_device.md) | 同模组、同接法可以直接沿用。GPIO、UART 不同就要改板级 DTS，驱动不用换 |
-| AP6256 蓝牙 | 数据走 UART4，`rfkill-bt` 管 `BT_REG_ON`。用户态 `brcm_patchram_plus1` 下载 `BCM4345C5.hcd` 得到 `hci0`。[`rk3576.config`](../arch/arm64/configs/rk3576.config) 里 `CONFIG_BT_HCIUART` 是关闭的 | 沿用 SDK 的 `wifibt-init.sh`。不要为了蓝牙去打开内核 `HCIUART`，那会和现有 attach 方式打架 |
+| 本机 WiFi / 蓝牙 | 实测为 **Seekwave SWT6621S**，SDIO `1ffe:6621`，驱动 `swt6621s_wifi.ko`。`wlan0` 与 `hci0` 都由这块 SDIO 模组带起来，`hciconfig` 里 `Bus: SDIO`。Debian rootfs 里 `wifibt-init.sh start` 会打印该芯片。开机用 `/etc/wpa_supplicant.conf` + `wlan0-connect.service` 连接 AP | 不要再按 AP6256 去加载 `bcmdhd.ko`，也不要用 `brcm_patchram_plus1` 当这条蓝牙的通路 |
+| SDK 里的 AP6256 例子 | K7C 设备树仍 include `rk3576-kickpi-k7c-wifi.dtsi`（bcmdhd、UART4、`BCM4345C5.hcd`）。说明在 [wifi_device.md](wifi_device.md) | 那是树里的参考接法，不是本机正在跑的模组 |
 | 显示框架 | `CONFIG_DRM=y`、`CONFIG_DRM_ROCKCHIP=y`、`CONFIG_DRM_PANEL_SIMPLE=y` | LVGL 走 DRM/KMS dumb buffer 即可 |
 
 RKLLM Toolkit、`librkllm.so`、LVGL、libwebsockets、libcurl、BlueZ、frpc 都不在本内核树里，由 Buildroot 和 SDK 的 `external/` 提供。内核树能证明的是 NPU、显示、WiFi、蓝牙的底层条件。
@@ -138,18 +138,18 @@ RK3576 NPU 公开峰值 6 TOPS（INT8）。UI 上 token/s 用回调计数 ÷ 墙
 1. 打开 [rk3576-kickpi-k7c.dtsi](../arch/arm64/boot/dts/rockchip/rk3576-kickpi-k7c.dtsi) 里对 [`rk3576-kickpi-lcd-mipi-5-720-1280-F050008M01.dtsi`](../arch/arm64/boot/dts/rockchip/rk3576-kickpi-lcd-mipi-5-720-1280-F050008M01.dtsi) 的 include（当前第 19 行被注释）。该文件已给出 720×1280、4 lane、RGB888、84MHz、`simple-panel-dsi` 初始化序列，DSI 走 VP1。LVGL 画布按 720×1280 竖屏做。
 2. 面板节点里的复位（`gpio0 RK_PA2`）、背光（`pwm1_6ch_1`）和电源（`gpio0 RK_PC6`）以这块板的原理图核对。脚不一致就只改这三处，不改时序。
 3. 计划里的对话框、压缩按钮、模式开关需要输入设备。5 寸 MIPI 通常还有一颗 I2C 触摸（常见 GT9xx / CST / FT）。原理图上有触摸就在这一阶段一并进 DTS。没有触摸时，本地屏只做显示和少量 GPIO 键，文字从手机进来。LVGL 自带拼音输入法是单独的大项，不放进前两阶段。
-4. AP6256 若与 K7C 同脚（SDIO、`WL_REG_ON`、`HOST_WAKE`、UART4、`BT_REG_ON`），直接用 [rk3576-kickpi-k7c-wifi.dtsi](../arch/arm64/boot/dts/rockchip/rk3576-kickpi-k7c-wifi.dtsi)。不同就只改 GPIO 和 pinctrl。蓝牙串口名来自 `wireless-bluetooth` 下 `uart*` 子节点，改名会导致脚本找错 `/dev/ttyS*`。
-5. 固件放 rootfs：`fw_bcm43456c5_ag.bin`、`nvram_ap6256.txt`、`BCM4345C5.hcd`，由 SDK `external/rkwifibt` 安装。内核源码树里没有这些 bin。
+4. 本机无线是 Seekwave SWT6621S，不是 AP6256。Debian rootfs 已带 `swt6621s_wifi.ko`。K7C 的 [rk3576-kickpi-k7c-wifi.dtsi](../arch/arm64/boot/dts/rockchip/rk3576-kickpi-k7c-wifi.dtsi) 仍在树里，描述的是博通脚位，不要据此改本机驱动。
+5. 连网用板子上的 `/etc/wpa_supplicant.conf`。SSID 以 `wpa_cli scan_results` 为准。热点若是 WPA2+WPA3，`key_mgmt=WPA-PSK SAE`。开机服务是 `/etc/systemd/system/wlan0-connect.service`。
 
-阶段出口：MIPI 有画面，`wlan0` 能连上 AP 并拿到地址，`hci0` 出现。连上 WiFi 看 `wpa_cli status`，不要看接口的 `LOWER_UP`（bcmdhd 的载波位不能表示已经关联）。
+阶段出口：MIPI 有画面，`wlan0` 的 `wpa_state=COMPLETED` 且有 IPv4，`hci0` 存在。不要用 `LOWER_UP` 判断已经关联。
 
 ### Buildroot 裁剪
 
 值得做，而且应该做。4GB 上它是运行余量，不是 2048 的开关。
 
-内核保留：`ROCKCHIP_RKNPU`、DRM/Rockchip、MIPI DSI、`simple-panel-dsi`、`dw_mmc`、bcmdhd 依赖的 SDIO 和 rfkill、thermal、devfreq。建议打开 `CONFIG_ROCKCHIP_RKNPU_PROC_FS`，让负载读 `/proc/rknpu/load`。
+内核保留：`ROCKCHIP_RKNPU`、DRM/Rockchip、MIPI DSI、`simple-panel-dsi`、`dw_mmc`、Seekwave 依赖的 SDIO、thermal、devfreq。建议打开 `CONFIG_ROCKCHIP_RKNPU_PROC_FS`，让负载读 `/proc/rknpu/load`。
 
-rootfs 保留：`wpa_supplicant`、`bluez5`（后面 GATT 要用）、`libdrm`、`librkllm`、`libwebsockets`、`libcurl`（OpenSSL）、CA 证书、`brcm_patchram_plus1` 和上述固件。中文字体用子集，整包思源黑体没有必要。
+rootfs 保留：`wpa_supplicant`、BlueZ（后面 GATT 要用）、`libdrm`、`librkllm`、`libwebsockets`、`libcurl`（OpenSSL）、CA 证书、`swt6621s_wifi.ko`、`/etc/wpa_supplicant.conf` 和 `wlan0-connect.service`。中文字体用子集，整包思源黑体没有必要。
 
 CMA / DMA heap 维持 SDK 默认，等 NPU 加载模型失败再调，不预先砍小。
 
@@ -221,7 +221,7 @@ UI 切换「本地 Qwen3-1.7B（或已启用的板端模型）/ 云端 GLM-4.7�
 
 ## 第四阶段：BLE
 
-AP6256 的 `hci0` 起来之后，用 BlueZ GATT 做外设：一个可写特征收问题，一个 Notify 特征推 token。Notify 按协商后的 MTU 分片。
+本机 `hci0`（Seekwave，SDIO）起来之后，用 BlueZ GATT 做外设：一个可写特征收问题，一个 Notify 特征推 token。Notify 按协商后的 MTU 分片。
 
 BLE 队列独立。手机走远、Notify 写不进去，丢的是蓝牙这一路的 token，LVGL 和 WebSocket 继续。
 
@@ -279,7 +279,7 @@ RKLLM 回调 / curl SSE 读线程
 | DRM 单帧 buffer 是省内存的关键 | 只能省约一块帧缓冲。CMA 和 RKNPU 维持默认为主 |
 | 联网拉取 API Key，同时又在 UI 输入且不落盘 | 只保留 UI 输入，进程内存，不落盘 |
 | 裁掉调试用文件系统 | 可以关无关调试项。NPU 负载改走 `/proc/rknpu/load`，避免绑死 debugfs |
-| 蓝牙依赖内核 HCI UART | 本配置关闭了 `CONFIG_BT_HCIUART`。用 `brcm_patchram_plus1` + `BCM4345C5.hcd` |
+| 蓝牙依赖博通 UART 补丁 | 本机不是这条路。`hci0` 来自 Seekwave SDIO。SDK 里的 `CONFIG_BT_HCIUART` 仍保持关闭，避免和别的板子的 `brcm_patchram_plus1` 打架 |
 
 ---
 
@@ -289,8 +289,8 @@ RKLLM 回调 / curl SSE 读线程
 
 - `CONFIG_ROCKCHIP_RKNPU`、NPU 的电源域和 IOMMU（板级把 `rknpu` 设为 okay）
 - DRM、Rockchip VOP/DSI、面板驱动（RKNPU 默认还依赖 DRM GEM）
-- SDIO、`mmc-pwrseq-simple`、rfkill、bcmdhd 模块
-- 蓝牙固件和 `brcm_patchram_plus1` 用的那路 UART
+- SDIO，以及本机的 `swt6621s_wifi.ko`（不要改成只留 bcmdhd）
+- 已经能带起 `hci0` 的 Seekwave 蓝牙固件 / 用户态初始化
 - `MemAvailable`、thermal、devfreq、`/proc/net/dev` 这些统计源所在的 procfs / sysfs
 
 ---

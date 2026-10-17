@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # git_push_must_change.sh
 #
-# 从轻量仓库 RK3576_LLM_PROJECT 拉取「必须改动」文件，并补丁进当前 SDK 根目录。
-# 旧文件备份到 lastonce/<相对路径>，保留目录结构。
+# 把「差分包」落到完整 SDK。日常提交在 makediff / RK3576_LLM_PROJECT，
+# 本脚本只负责拷贝进编译树（旧文件进 lastonce/）。用法详见 makediff/README.md。
 #
 # 用法（在 SDK 根目录执行）：
-#   ./scripts/git_push_must_change.sh              # 拉取 origin 最新后应用
-#   ./scripts/git_push_must_change.sh /path/overlay  # 用已有目录（如 makediff）应用，不联网
-#   REPO_URL=... BRANCH=main BACKUP=lastonce ./scripts/git_push_must_change.sh
+#   ./makediff/git_push_must_change.sh makediff       # 推荐：本地 overlay
+#   ./scripts/git_push_must_change.sh /path/overlay
+#   ./makediff/git_push_must_change.sh                 # 无参：git 拉轻量仓再应用
 #
-# 环境变量：
-#   REPO_URL   默认 https://github.com/thhhjjj/RK3576_LLM_PROJECT.git
-#   BRANCH     默认 main
-#   BACKUP     默认 lastonce
-#   CACHE_DIR  默认 .must_change_repo（相对 SDK 根）
+# 会落地（overlay 里有则拷）：
+#   - device / kernel DTS·defconfig·FTS
+#   - buildroot 裁剪、package/llm_panel、overlays/30-llm_ctrl
+#   - buildroot/dl/lvgl、lv_drivers 离线 tarball
+#   - kernel-6.1/markdown/project/llm_ctrl、llm_panel（跳过 *.md）
+#   - llm_ctrl_autoload/llm_ctrl.ko → project/llm_ctrl/
+#
+# 环境变量：REPO_URL BRANCH BACKUP CACHE_DIR
 
 set -euo pipefail
 
@@ -25,7 +28,6 @@ CACHE_DIR="${CACHE_DIR:-.must_change_repo}"
 die() { echo "错误: $*" >&2; exit 1; }
 info() { echo "$*"; }
 
-# 定位 SDK 根：含 kernel-6.1 或 kernel 软链
 find_sdk_root() {
 	local d="$1"
 	while [ "$d" != "/" ]; do
@@ -69,7 +71,7 @@ else
 	SRC="$CACHE_PATH"
 fi
 
-# 是否跳过该相对路径
+# return 0 = skip, 1 = apply
 should_skip() {
 	local rel="$1"
 	case "$rel" in
@@ -80,13 +82,42 @@ should_skip() {
 		*.patch) return 0 ;;
 		APPLY_*|*/APPLY_*) return 0 ;;
 		git_push_must_change.sh|*/git_push_must_change.sh) return 0 ;;
-		# 仅文档/工具树，不往内核树里盖
-		markdown/*|*/markdown/*) return 0 ;;
+		# staging helper dir: handled specially below
+		llm_ctrl_autoload|llm_ctrl_autoload/*) return 0 ;;
+	esac
+
+	# Allow PHASE1 out-of-tree apps (C/Makefile/CMake), skip other markdown docs
+	case "$rel" in
+		kernel-6.1/markdown/project/llm_ctrl/*|\
+		kernel/markdown/project/llm_ctrl/*|\
+		kernel-6.1/markdown/project/llm_panel/*|\
+		kernel/markdown/project/llm_panel/*)
+			return 1 ;;
+		markdown/*|*/markdown/*)
+			return 0 ;;
 	esac
 	return 1
 }
 
-# 收集 overlay 里要落地的文件（相对 SRC）——兼容 bash 3.2（无 mapfile）
+apply_one() {
+	local src_rel="$1"
+	local dest="$2"
+	local mode="${3:-}"
+
+	[ -f "$SRC/$src_rel" ] || return 0
+
+	if [ -e "$SDK_ROOT/$dest" ]; then
+		mkdir -p "$SDK_ROOT/$BACKUP/$(dirname "$dest")"
+		mv -v "$SDK_ROOT/$dest" "$SDK_ROOT/$BACKUP/$dest"
+	fi
+	mkdir -p "$SDK_ROOT/$(dirname "$dest")"
+	cp -v "$SRC/$src_rel" "$SDK_ROOT/$dest"
+	case "$mode" in
+		+x) chmod +x "$SDK_ROOT/$dest" ;;
+	esac
+	APPLIED=$((APPLIED + 1))
+}
+
 FILE_LIST="$(mktemp)"
 trap 'rm -f "$FILE_LIST"' EXIT
 (
@@ -112,25 +143,43 @@ while IFS= read -r f; do
 	fi
 	[ -f "$SRC/$f" ] || continue
 
-	# 仓库根下的同名脚本 → SDK scripts/
 	dest="$f"
+	mode=""
 	if [ "$(basename "$f")" = "git_push_must_change.sh" ]; then
 		dest="scripts/git_push_must_change.sh"
+		mode="+x"
 	fi
+	case "$dest" in
+		*/etc/init.d/*|*/prepare.sh|scripts/*.sh)
+			mode="+x"
+			;;
+	esac
 
-	if [ -e "$SDK_ROOT/$dest" ]; then
-		mkdir -p "$SDK_ROOT/$BACKUP/$(dirname "$dest")"
-		mv -v "$SDK_ROOT/$dest" "$SDK_ROOT/$BACKUP/$dest"
-	fi
-	mkdir -p "$SDK_ROOT/$(dirname "$dest")"
-	cp -v "$SRC/$f" "$SDK_ROOT/$dest"
-	if [ "$(basename "$dest")" = "git_push_must_change.sh" ]; then
-		chmod +x "$SDK_ROOT/$dest"
-	fi
-	APPLIED=$((APPLIED + 1))
+	apply_one "$f" "$dest" "$mode"
 done < "$FILE_LIST"
+
+# Optional: prebuilt module for rootfs prepare.sh
+if [ -f "$SRC/llm_ctrl_autoload/llm_ctrl.ko" ]; then
+	info "安装预编译 llm_ctrl.ko → markdown/project/llm_ctrl/"
+	apply_one "llm_ctrl_autoload/llm_ctrl.ko" \
+		"kernel-6.1/markdown/project/llm_ctrl/llm_ctrl.ko" ""
+fi
+if [ -f "$SRC/llm_ctrl_autoload/S39llm_ctrl" ]; then
+	# also keep a copy under overlay path if not already from buildroot/
+	:
+fi
 
 info ""
 info "完成: 应用 ${APPLIED} 个文件，跳过 ${SKIPPED} 个。"
 info "备份目录: $SDK_ROOT/$BACKUP/"
-info "下一步示例: ./build.sh kernel"
+info "用法说明: makediff/README.md（若 overlay 在旁边）"
+info ""
+info "请确认 SDK（不是 overlay）："
+info "  grep DEPENDENCIES buildroot/package/llm_panel/llm_panel.mk   # 须含 lv_drivers freetype"
+info "  grep 'select BR2_PACKAGE_LVGL_USE' buildroot/package/llm_panel/Config.in || echo OK"
+info "  ls kernel-6.1/markdown/project/llm_panel/{main.c,evdev.c}"
+info "  ls buildroot/dl/lvgl/lvgl-8.3.0.tar.gz buildroot/dl/lv_drivers/lv_drivers-8.3.0.tar.gz"
+info "  grep RK_BUILDROOT_BASE_CFG device/rockchip/.chips/rk3576/rockchip_rk3576_kickpi_k7c_buildroot_defconfig"
+info ""
+info "下一步: ./build.sh lunch  # 选 kickpi_k7c_buildroot(5)"
+info "       ./build.sh rootfs  # → buildroot/output/rockchip_rk3576_kickpi_k7c_llm/"

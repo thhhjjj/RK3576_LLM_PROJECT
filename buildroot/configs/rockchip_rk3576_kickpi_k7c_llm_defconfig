@@ -1,0 +1,14 @@
+# KickPi K7C LLM terminal — trimmed vs rockchip_rk3576_defconfig.
+# Dropped: Chromium, Weston, GStreamer, camera, audio, CAN/PCI,
+# benchmarks, rockchip-test demos, NTFS/exFAT, Chinese system fonts
+# (LVGL ships its own subset), power-manager extras.
+# Kept: base, aarch64 chip, VFAT, WiFi/BT (Seekwave via rkwifibt),
+# RKNPU2, and products/llm_terminal keep-list.
+
+#include "base/base.config"
+#include "chips/rk3576_aarch64.config"
+#include "fs/vfat.config"
+#include "wifibt/bt.config"
+#include "wifibt/wireless.config"
+#include "npu2.config"
+#include "products/llm_terminal.config"

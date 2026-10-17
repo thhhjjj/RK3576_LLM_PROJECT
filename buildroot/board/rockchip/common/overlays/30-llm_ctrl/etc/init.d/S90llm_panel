@@ -1,0 +1,26 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:       llm_panel
+# Required-Start: $local_fs
+# Default-Start:  S
+# Description:    Start PHASE1 LVGL panel on DRM
+### END INIT INFO
+
+DAEMON=/usr/bin/llm_panel
+
+case "$1" in
+	start)
+		if [ -x "$DAEMON" ]; then
+			sleep 1
+			$DAEMON >/tmp/llm_panel.log 2>&1 &
+		fi
+		;;
+	stop)
+		killall llm_panel 2>/dev/null || true
+		;;
+	*)
+		echo "Usage: $0 [start|stop]" >&2
+		exit 3
+		;;
+esac
+:

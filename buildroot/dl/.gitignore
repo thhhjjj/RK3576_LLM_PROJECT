@@ -1,0 +1,4 @@
+# Keep LVGL offline tarballs in the differential overlay.
+# Main SDK buildroot/.gitignore ignores /dl; this overlay still ships them.
+!*
+!.gitignore

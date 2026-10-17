@@ -1,0 +1,36 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:       llm_ctrl
+# Required-Start: $local_fs
+# Required-Stop:  $local_fs
+# Default-Start:  S
+# Default-Stop:   K
+# Description:    Load llm_ctrl.ko (NPU thermal sysfs + genetlink)
+### END INIT INFO
+
+KO=/lib/modules/llm_ctrl.ko
+
+case "$1" in
+	start)
+		if [ -f "$KO" ]; then
+			if ! lsmod | grep -q '^llm_ctrl'; then
+				insmod "$KO" || echo "llm_ctrl: insmod failed" >&2
+			fi
+		else
+			echo "llm_ctrl: missing $KO" >&2
+		fi
+		;;
+	stop)
+		rmmod llm_ctrl 2>/dev/null || true
+		;;
+	restart)
+		$0 stop
+		$0 start
+		;;
+	*)
+		echo "Usage: $0 [start|stop|restart]" >&2
+		exit 3
+		;;
+esac
+
+:
