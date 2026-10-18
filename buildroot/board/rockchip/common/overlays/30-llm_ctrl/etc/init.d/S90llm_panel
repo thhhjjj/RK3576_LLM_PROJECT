@@ -3,7 +3,7 @@
 # Provides:       llm_panel
 # Required-Start: $local_fs
 # Default-Start:  S
-# Description:    Start PHASE1 LVGL panel on DRM
+# Description:    Start LVGL panel (PHASE2: loads RKLLM before UI)
 ### END INIT INFO
 
 DAEMON=/usr/bin/llm_panel

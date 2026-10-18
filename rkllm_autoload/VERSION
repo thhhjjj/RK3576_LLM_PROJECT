@@ -1,0 +1,6 @@
+release-v1.3.1
+source: airockchip/rknn-llm
+files:
+  - librkllmrt.so (aarch64)
+  - ../kernel-6.1/markdown/project/llm_panel/vendor/rkllm.h
+note: model .rkllm not included — drop into models/default.rkllm yourself

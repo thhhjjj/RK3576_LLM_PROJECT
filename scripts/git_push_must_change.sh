@@ -15,6 +15,7 @@
 #   - buildroot/dl/lvgl、lv_drivers 离线 tarball
 #   - kernel-6.1/markdown/project/llm_ctrl、llm_panel（跳过 *.md）
 #   - llm_ctrl_autoload/llm_ctrl.ko → project/llm_ctrl/
+#   - rkllm_autoload/*.so、models/*.{rkllm,rknn} → SDK/rkllm_autoload/（prepare.sh 装进 rootfs）
 #
 # 环境变量：REPO_URL BRANCH BACKUP CACHE_DIR
 
@@ -82,8 +83,9 @@ should_skip() {
 		*.patch) return 0 ;;
 		APPLY_*|*/APPLY_*) return 0 ;;
 		git_push_must_change.sh|*/git_push_must_change.sh) return 0 ;;
-		# staging helper dir: handled specially below
+		# staging helper dirs: handled specially below
 		llm_ctrl_autoload|llm_ctrl_autoload/*) return 0 ;;
+		rkllm_autoload|rkllm_autoload/*) return 0 ;;
 	esac
 
 	# Allow PHASE1 out-of-tree apps (C/Makefile/CMake), skip other markdown docs
@@ -169,6 +171,55 @@ if [ -f "$SRC/llm_ctrl_autoload/S39llm_ctrl" ]; then
 	:
 fi
 
+# PHASE2: stage rkllm runtime/model next to SDK for prepare.sh
+if [ -d "$SRC/rkllm_autoload" ]; then
+	info "同步 rkllm_autoload → SDK/rkllm_autoload/"
+	mkdir -p "$SDK_ROOT/rkllm_autoload/models"
+	if [ -f "$SRC/rkllm_autoload/librkllmrt.so" ]; then
+		cp -v "$SRC/rkllm_autoload/librkllmrt.so" "$SDK_ROOT/rkllm_autoload/"
+		APPLIED=$((APPLIED + 1))
+	fi
+	if [ -f "$SRC/rkllm_autoload/libomp.so" ]; then
+		cp -v "$SRC/rkllm_autoload/libomp.so" "$SDK_ROOT/rkllm_autoload/"
+		APPLIED=$((APPLIED + 1))
+	fi
+	if [ -f "$SRC/rkllm_autoload/libgomp.so.1" ]; then
+		cp -v "$SRC/rkllm_autoload/libgomp.so.1" "$SDK_ROOT/rkllm_autoload/"
+		APPLIED=$((APPLIED + 1))
+	fi
+	if [ -f "$SRC/rkllm_autoload/models/QWEN3.5_2B.rkllm" ]; then
+		cp -v "$SRC/rkllm_autoload/models/QWEN3.5_2B.rkllm" \
+			"$SDK_ROOT/rkllm_autoload/models/"
+		APPLIED=$((APPLIED + 1))
+	elif [ -f "$SRC/rkllm_autoload/models/default.rkllm" ]; then
+		cp -v "$SRC/rkllm_autoload/models/default.rkllm" \
+			"$SDK_ROOT/rkllm_autoload/models/QWEN3.5_2B.rkllm"
+		APPLIED=$((APPLIED + 1))
+	fi
+	if [ -f "$SRC/rkllm_autoload/models/vision.rknn" ]; then
+		cp -v "$SRC/rkllm_autoload/models/vision.rknn" \
+			"$SDK_ROOT/rkllm_autoload/models/"
+		APPLIED=$((APPLIED + 1))
+	fi
+	# copy any other .rkllm / .rknn
+	for f in "$SRC/rkllm_autoload/models/"*.rkllm \
+		"$SRC/rkllm_autoload/models/"*.rknn; do
+		[ -f "$f" ] || continue
+		base="$(basename "$f")"
+		case "$base" in
+			QWEN3.5_2B.rkllm|default.rkllm|vision.rknn) continue ;;
+		esac
+		cp -v "$f" "$SDK_ROOT/rkllm_autoload/models/"
+		APPLIED=$((APPLIED + 1))
+	done
+	for f in "$SRC/rkllm_autoload/README.md" \
+		"$SRC/rkllm_autoload/VERSION" \
+		"$SRC/rkllm_autoload/fetch_qwen35_2b_vlm_rk3576.sh"; do
+		[ -f "$f" ] || continue
+		cp -v "$f" "$SDK_ROOT/rkllm_autoload/" || true
+	done
+fi
+
 info ""
 info "完成: 应用 ${APPLIED} 个文件，跳过 ${SKIPPED} 个。"
 info "备份目录: $SDK_ROOT/$BACKUP/"
@@ -177,8 +228,9 @@ info ""
 info "请确认 SDK（不是 overlay）："
 info "  grep DEPENDENCIES buildroot/package/llm_panel/llm_panel.mk   # 须含 lv_drivers freetype"
 info "  grep 'select BR2_PACKAGE_LVGL_USE' buildroot/package/llm_panel/Config.in || echo OK"
-info "  ls kernel-6.1/markdown/project/llm_panel/{main.c,evdev.c}"
+info "  ls kernel-6.1/markdown/project/llm_panel/{main.c,evdev.c,rkllm_session.c}"
 info "  ls buildroot/dl/lvgl/lvgl-8.3.0.tar.gz buildroot/dl/lv_drivers/lv_drivers-8.3.0.tar.gz"
+info "  ls rkllm_autoload/librkllmrt.so rkllm_autoload/models/QWEN3.5_2B.rkllm rkllm_autoload/models/vision.rknn 2>/dev/null || echo '(模型见 rkllm_autoload/README.md)'"
 info "  grep RK_BUILDROOT_BASE_CFG device/rockchip/.chips/rk3576/rockchip_rk3576_kickpi_k7c_buildroot_defconfig"
 info ""
 info "下一步: ./build.sh lunch  # 选 kickpi_k7c_buildroot(5)"

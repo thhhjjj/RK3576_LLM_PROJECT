@@ -1,6 +1,6 @@
 # RK3576 LLM — 差分包（makediff）使用说明
 
-> 同步状态（2026-10-17）：PHASE1 面板/中文字体/裁剪 Buildroot/`llm_ctrl` 等已齐。明细见 `kernel-6.1/markdown/project/PHASE/PHASE1_DID.md`。
+> 同步状态（2026-10-17）：PHASE1 已收官。PHASE2 已接 RKLLM 骨架（`dlopen` + 先 load 再 UI）；把 `librkllmrt.so` / `default.rkllm` 丢进 `rkllm_autoload/` 即可进镜像。见 `PHASE/PHASE2.md`、`rkllm_autoload/README.md`。
 
 日常**只在本目录（或云端轻量仓 `RK3576_LLM_PROJECT`）提交**。完整 SDK（~20GB）不当日常推送目标。
 
@@ -32,6 +32,7 @@ makediff/
 │       ├── llm_ctrl/                # 温控 ko + nl_watch（*.md 跳过）
 │       └── llm_panel/               # LVGL 面板源码
 ├── llm_ctrl_autoload/llm_ctrl.ko    # 预编译模块 → 编 rootfs 时装入
+├── rkllm_autoload/                  # PHASE2：librkllmrt.so + models/*.rkllm（默认不进 git）
 └── scripts/git_push_must_change.sh  # 同脚本副本
 ```
 
@@ -125,6 +126,7 @@ rm -f buildroot/output/rockchip_rk3576_kickpi_k7c_llm/.config
 | `undefined reference` FT_* | 未链 freetype | `CMakeLists` + DEPENDENCIES |
 | `undefined reference` evdev_* | Rockchip `lv_drivers` 未编 USE_EVDEV | 自带 `llm_panel/evdev.c` |
 | 中文方块 / 乱码 | 未装字库 | `llm_panel/fonts/SourceHanSansCN-Regular.otf` → `/usr/share/fonts/source-han-sans-cn/`（~8MB CN Subset） |
+| 面板提示「未加载」 | 无 runtime/模型 | `rkllm_autoload/librkllmrt.so` + `models/default.rkllm` → 落地 → 重编 rootfs |
 
 落地后若 SDK 里仍是旧文件，用强制拷贝再验收（见上一节 `grep`），不要只信 makediff 目录本身。
 

@@ -17,6 +17,8 @@ add_executable(llm_panel
 	metrics.c
 	evdev.c
 	font.c
+	tokq.c
+	rkllm_session.c
 )
 
 target_link_libraries(llm_panel
@@ -26,6 +28,7 @@ target_link_libraries(llm_panel
 	drm
 	evdev
 	pthread
+	dl
 	m
 )
 
