@@ -10,8 +10,8 @@
 | 1. 运行时进 rootfs | **已过**。`librkllmrt` 1.3.1 + `libgomp.so.1` 经 `prepare.sh` 进镜像；板上 `dlopen` 成功 |
 | 2. 冒烟 / 试跑模型 | **已过（文本）**。Qwen3.5-2B VLM 语言侧 **W4A16_G128** @1024；点「试问」有中文短答（2026-10-18） |
 | 3. 改 `llm_panel` 进程结构 | **已过**。先 `session_load` 再 LVGL；`tokq`；worker 线程；预置「试问」 |
-| 4. Qwen3.5-2B 文本多轮 + 压缩 | **已过（基本）**。试问 + 手动压缩 + prefill 后上下文恢复（`0.0.6`，2026-10-18）；多轮打满 70% / 压缩后 Mem 回升 **待记全** |
-| 5. 内存低水位与异常路径 | **代码已做**（`MemAvailable` &lt; 200MB → 告警 + 压缩，滞回解除）；板上极端低水位 **未实压** |
+| 4. Qwen3.5-2B 文本多轮 + 压缩 | **已过（基本）**。试问 + 手动压缩 + prefill 后上下文恢复（`0.0.6`，2026-10-18）；多轮打满 70% / 压缩后 Mem 回升 **待记全**。**压缩仍同步 → LVGL 假死，体验未过（见下「K」）** |
+| 5. 内存低水位与异常路径 | **代码已做**（`MemAvailable` &lt; 200MB → 告警 + 压缩，滞回解除）；板上极端低水位 **未实压**；低水位路径同样同步压缩，会卡屏 |
 | 6. 视觉通路 / 1.7B 对照 / 2048 | **未做**（`vision.rknn` 可后装；不挡文本验收） |
 | 7. 收口 | **未做**（模型是否烤进镜像、文档收口、对照表） |
 
@@ -174,6 +174,14 @@ Buildroot output 无 libgomp；`librkllmrt` 依赖它。
 `session_compress` 只 `destroy`+`create`，**未把保留历史 prefill 回新句柄**，KV 空 → 上下文显示没了。  
 → 重建后 `prefill_retained_hist()`（`vtest：0.0.6`）。
 
+### K. 压缩时整屏 LVGL 卡住（体验，2026-10-19）
+
+**现象**：点「压缩」或低水位触发后，对话区能先刷出「压缩中…」，随后整屏假死（指标停、触摸无响应），直到压缩结束。
+
+**根因**：`on_ui_compress` / `metrics_timer_cb` 在 LVGL 线程同步调 `session_compress()`（destroy → 整模 `create_handle` → `prefill_retained_hist`），堵住 `lv_timer_handler`。worker 路径上的压缩不堵 UI；**按钮与低水位这两条会堵**。
+
+**应对（未做）**：与 `session_ask` 对齐——主线程只投递压缩任务；worker 执行；`tokq` 推 `[压缩完成]` / 失败；压缩中拒 ask、防重复点。改完后验收：压缩全程六项指标仍刷新。
+
 细节口诀见 [version_must_care.md](./version_must_care.md)。
 
 ---
@@ -193,6 +201,7 @@ adb shell 'grep -E "model=|loaded|skip leading|cut trailing" /tmp/llm_panel.log 
 ## 驱动 / 用户态结论（截至 2026-10-18）
 
 - **已过（继承 PHASE1）**：MIPI、FTS、Seekwave、裁剪 Buildroot、`llm_ctrl`、`llm_panel` 显示+触摸+中文。  
-- **本阶段已过**：RKLLM 1.3.1 + libgomp；先 load 再 UI；Qwen3.5-2B W4A16_G128 文本试问；thinking 抑制；内存低水位压缩（代码）；版本标签快验。  
-- **下一步**：多轮/手动压缩后记 `MemAvailable`；`adb push` 验 `0.0.5`；收口是否烤模型。  
+- **本阶段已过**：RKLLM 1.3.1 + libgomp；先 load 再 UI；Qwen3.5-2B W4A16_G128 文本试问；thinking 抑制；内存低水位压缩（代码）；压缩后 prefill（`0.0.6`）；版本标签快验。  
+- **已知体验问题**：压缩同步跑在 LVGL 线程 → 整屏卡死（见 **K**）；影响正式体验，须异步化后再算压缩合格。  
+- **下一步**：**压缩异步化（优先）**；多轮/手动压缩后记 `MemAvailable`；收口是否烤模型。  
 - **不做**：WebSocket、GATT、云端 SSE、frpc、拼音输入法。
