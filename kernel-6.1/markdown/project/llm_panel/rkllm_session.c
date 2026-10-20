@@ -30,9 +30,10 @@ static const char *SMOKE_Q = "用一句话介绍 RK3576 上的 RKNPU。";
 /* Min kept answer bytes before we treat trailing "Thinking Process" as junk. */
 #define THINK_ANSWER_MIN 12
 
+//文本属性
 struct hist_msg {
-	char role; /* 's' system, 'u' user, 'a' assistant */
-	char text[MSG_MAX];
+	char role; //文本所属角色
+	char text[MSG_MAX];//对话文本内容
 };
 
 typedef RKLLMParam (*fn_createDefaultParam)(void);
@@ -88,11 +89,13 @@ static int skip_pre_think;
 /* Compress rebuild: feed retained hist into new handle without showing tokens. */
 static int prefilling;
 
+//重置对话，只保留系统提示词
 static void hist_reset_keep_system(void)
 {
+
 	hist_n = 0;
-	hist[0].role = 's';
-	strncpy(hist[0].text, SYSTEM_PROMPT, MSG_MAX - 1);
+	hist[0].role = 's';//system 人设
+	strncpy(hist[0].text, SYSTEM_PROMPT, MSG_MAX - 1);//复制系统提示词到hist[0].text
 	hist[0].text[MSG_MAX - 1] = '\0';
 	hist_n = 1;
 }
@@ -490,6 +493,7 @@ static void *worker_main(void *arg)
 	return NULL;
 }
 
+// 初始化会话模块
 int session_init(void)
 {
 	hist_reset_keep_system();

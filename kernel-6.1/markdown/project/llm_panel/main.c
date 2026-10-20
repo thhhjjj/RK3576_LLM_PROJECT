@@ -4,7 +4,7 @@
  * PHASE2 order: session_load (RKLLM) → then LVGL UI.
  */
 
-#include <signal.h>
+#include <signal.h>//signal()、SIGINT、SIGTERM，引入信号处理机制
 #include <stdio.h>
 #include <unistd.h>
 
@@ -23,12 +23,14 @@ static volatile int g_quit;
 /* PHASE2: MemAvailable low-water (MB) → warn + one compress. */
 #define MEM_LOW_WATER_MB 200
 
+//退出回调置回调信号
 static void on_sig(int sig)
 {
 	(void)sig;
 	g_quit = 1;
 }
 
+//外部压缩回调
 static void on_ui_compress(void)
 {
 	ui_append_dialog("\n[压缩中…]\n");
@@ -36,6 +38,7 @@ static void on_ui_compress(void)
 		ui_append_dialog("[压缩失败]\n");
 }
 
+//外部问答回调
 static void on_ui_ask(void)
 {
 	const char *q = session_smoke_question();
@@ -51,6 +54,7 @@ static void on_ui_ask(void)
 		ui_append_dialog("[忙或失败]\n");
 }
 
+//冲刷打印队列
 static void drain_tokq(void)
 {
 	struct tokq_evt ev;
@@ -86,6 +90,7 @@ static void drain_tokq(void)
 	}
 }
 
+//定时器回调
 static void metrics_timer_cb(lv_timer_t *t)
 {
 	struct llm_metrics m;
@@ -122,6 +127,7 @@ static void metrics_timer_cb(lv_timer_t *t)
 	}
 }
 
+//lvgl外设驱动初始化
 static void hal_init(void)
 {
 	lv_disp_t *disp;
@@ -151,7 +157,8 @@ int main(int argc, char **argv)
 	(void)argc;
 	(void)argv;
 
-	//注册声明退出信号
+	// 向内核注册 SIGINT/SIGTERM 处理函数：收到后设 g_quit，回调on_sig()，
+	// 主线程回到 while (!g_quit) 发现该退了就退出
 	signal(SIGINT, on_sig);//ctrl c退出
 	signal(SIGTERM, on_sig);//kill -pid退出
 	//初始化会话模块
@@ -170,11 +177,11 @@ int main(int argc, char **argv)
 		fprintf(stderr,
 			"llm_panel: no RKLLM yet — UI starts without model\n");
 
-	hal_init();//初始化硬件抽象层
+	hal_init();//初始化lvgl硬件驱动
 	if (font_init() != 0)//FreeType 加载思源黑体
 		fprintf(stderr, "llm_panel: using montserrat fallback (no CJK)\n");
 
-	ui_set_actions(on_ui_compress, on_ui_ask);//设置UI操作回调函数
+	ui_set_actions(on_ui_compress, on_ui_ask);//绑定内部lvglUI操作回调唤起的回调
 	ui_create();//创建UI控件
 	ui_set_model_status(model_ok ? "已加载" : "未加载");
 	if (model_ok)
