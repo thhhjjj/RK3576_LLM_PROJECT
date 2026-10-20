@@ -59,54 +59,76 @@ static int read_int_file(const char *path, int *out)
 	return 0;
 }
 
-static int discover_gpu_load(void)
+/*
+ * 探测 GPU load 的 sysfs 路径（用户态只存路径字符串，供之后 open/read）。
+ * 内核侧大致：VFS 路径解析 → sysfs（挂在 kernfs 上）→ 驱动导出的 load 属性。
+ * 对照：CPU/内存等常走 procfs(/proc)；GPU 调频负载多在 sysfs(/sys/class/devfreq/...)。
+ * 错误：返回 -errno
+ * 成功：have_gpu_path=1，gpu_load_path="/sys/class/devfreq/<name>/load"
+ */
+static int probe_gpu_load_path(void)
 {
 	DIR *d = opendir("/sys/class/devfreq");
 	struct dirent *de;
-
+//优先遍历------------------------------------------------------------
+	//清空结果路径
 	gpu_load_path[0] = '\0';
 	have_gpu_path = 0;
+	
+	//未打开目录，返回-errno
 	if (!d)
 		return -errno;
-
-	while ((de = readdir(d)) != NULL) {
-		char loadp[PATH_MAX];
+	
+	//遍历目录
+	while ((de = readdir(d)) != NULL) {//读取目录项
+		char loadp[PATH_MAX];//加载路径
 		const char *n = de->d_name;
 
+		//过滤隐藏文件
 		if (n[0] == '.')
 			continue;
-		/* Prefer names that look like mali / gpu */
+		//优先匹配mali / gpu
 		if (!strstr(n, "gpu") && !strstr(n, "mali") &&
 		    !strstr(n, "fb000000") && !strstr(n, "27900000"))
 			continue;
 
+		//拼接加载路径
 		snprintf(loadp, sizeof(loadp),
 			 "/sys/class/devfreq/%s/load", n);
+		//判断加载路径是否存在
 		if (access(loadp, R_OK) == 0) {
+			//复制加载路径到gpu_load_path
 			snprintf(gpu_load_path, sizeof(gpu_load_path), "%s",
 				 loadp);
-			have_gpu_path = 1;
+			have_gpu_path = 1;//设置加载路径标志
 			break;
 		}
 	}
 	closedir(d);
-
-	/* Fallback: first devfreq node that has load */
+	
+//兜底遍历---------------------------------------------------------------
+	//未找到加载路径，再次遍历目录
 	if (!have_gpu_path) {
+		//再次打开目录
 		d = opendir("/sys/class/devfreq");
+		//未打开目录，返回-ENOENT
 		if (!d)
 			return -ENOENT;
-		while ((de = readdir(d)) != NULL) {
+		//遍历目录
+		while ((de = readdir(d)) != NULL) {//读取目录项
 			char loadp[PATH_MAX];
 
 			if (de->d_name[0] == '.')
 				continue;
+			//拼接加载路径
 			snprintf(loadp, sizeof(loadp),
 				 "/sys/class/devfreq/%s/load", de->d_name);
+			//判断加载路径是否存在
 			if (access(loadp, R_OK) == 0) {
+				//复制加载路径到gpu_load_path
 				snprintf(gpu_load_path, sizeof(gpu_load_path),
 					 "%s", loadp);
-				have_gpu_path = 1;
+				have_gpu_path = 1;//设置加载路径标志
 				break;
 			}
 		}
@@ -115,11 +137,13 @@ static int discover_gpu_load(void)
 	return have_gpu_path ? 0 : -ENOENT;
 }
 
+//初始化指标模块
 int metrics_init(void)
 {
+	//清空负载是否有初始值参数
 	have_cpu_prev = 0;
 	have_net_prev = 0;
-	discover_gpu_load();
+	probe_gpu_load_path();
 	if (have_gpu_path)
 		fprintf(stderr, "metrics: GPU load path %s\n", gpu_load_path);
 	else

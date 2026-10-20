@@ -14,9 +14,9 @@ enum tokq_kind {
 	TOKQ_STATUS, /* human-readable status line for dialog */
 };
 
-struct tokq_evt {
-	enum tokq_kind kind;
-	char text[256];
+struct tokq_evt {//事件队列元素
+	enum tokq_kind kind; //事件类型
+	char text[256]; //事件文本
 };
 
 int tokq_init(void);

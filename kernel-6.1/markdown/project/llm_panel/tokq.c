@@ -5,11 +5,19 @@
 #include <string.h>
 
 #define TOKQ_CAP 128
-
+//事件队列
 static struct tokq_evt q[TOKQ_CAP];
+
+//事件队列索引
+//head 读位置：pop 从这里取
+//tail 写位置：push 往这里放
+//count 当前队列里有多少个事件
 static unsigned head, tail, count;
+
+//定义互斥锁，初始化未上锁
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
+//初始化token事件队列
 int tokq_init(void)
 {
 	pthread_mutex_lock(&lock);

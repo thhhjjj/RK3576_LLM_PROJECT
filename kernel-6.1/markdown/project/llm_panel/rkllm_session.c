@@ -89,12 +89,11 @@ static int skip_pre_think;
 /* Compress rebuild: feed retained hist into new handle without showing tokens. */
 static int prefilling;
 
-//重置对话，只保留系统提示词
+//重置对话历史，只保留系统提示词
 static void hist_reset_keep_system(void)
 {
-
 	hist_n = 0;
-	hist[0].role = 's';//system 人设
+	hist[0].role = 's';//system 主题与人设
 	strncpy(hist[0].text, SYSTEM_PROMPT, MSG_MAX - 1);//复制系统提示词到hist[0].text
 	hist[0].text[MSG_MAX - 1] = '\0';
 	hist_n = 1;
@@ -332,10 +331,14 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 	return 0;
 }
 
+/*
+* 解析符号：把 librkllmrt.so 里 rkllm_xxx 的函数指针都封装出来。
+* 缺依赖：解析时失败，但 dlsym() 本身会返回 NULL。
+* 返回：0 成功，-1 失败
+*/
 static int resolve_syms(void)
 {
-	p_createDefaultParam = (fn_createDefaultParam)dlsym(
-		lib, "rkllm_createDefaultParam");
+	p_createDefaultParam = (fn_createDefaultParam)dlsym(lib, "rkllm_createDefaultParam");
 	p_init = (fn_init)dlsym(lib, "rkllm_init");
 	p_destroy = (fn_destroy)dlsym(lib, "rkllm_destroy");
 	p_run = (fn_run)dlsym(lib, "rkllm_run");
@@ -354,21 +357,31 @@ static int resolve_syms(void)
 	return 0;
 }
 
+/*
+* 静态库与动态库：llm_panel 编译时不强制 staging 里有 RKLLM；
+* 没有 so 也能编过、UI 先起来，只是推理不可用。若链成静态库，没库就链失败，
+* 或把整份 runtime 焊死进二进制。
+*/
+//open_lib：把 RKLLM 运行时 .so 装进进程，并解析出要用的函数指针
 static int open_lib(void)
 {
+	//从环境变量中获取库路径
 	const char *path = getenv("LLM_PANEL_LIB");
-
+	//如果环境变量中没有库路径，使用默认库路径
 	if (!path || !path[0])
 		path = LLM_PANEL_DEFAULT_LIB;
+	//RTLD_NOW 立刻解析库里的符号依赖；缺依赖现在就失败
 	lib = dlopen(path, RTLD_NOW);
 	if (!lib) {
 		fprintf(stderr, "rkllm_session: dlopen %s failed: %s\n", path,
 			dlerror());
 		return -1;
 	}
+	//把 librkllmrt.so 里 rkllm_xxx 的函数指针都封装出来。
 	return resolve_syms();
 }
 
+//销毁会话句柄
 static void destroy_handle(void)
 {
 	if (handle && p_destroy) {
@@ -379,27 +392,65 @@ static void destroy_handle(void)
 	loaded = 0;
 }
 
+//初始化 RKLLM 的 LLMHandle，并把模型加载进去。
+//参数：模型路径
 static int create_handle(const char *model_path)
 {
 	RKLLMParam param;
 	RKLLMCallback cb;
 	int ret;
-
+	//导入默认值
 	param = p_createDefaultParam();
+	//设置权重模型路径
 	param.model_path = model_path;
+	//最大上下文窗口
 	param.max_context_len = LLM_PANEL_MAX_CONTEXT;
+	//单轮生成最大tokens数
 	param.max_new_tokens = 512;
+	//top_k，按排名采样，每次只固定填入最大概率的前k个token，且再从k个抽一个
 	param.top_k = 1;
+	//top_p，按范围概率采样，每次取n个token，直到概率和大于0.9，再从n个中抽一个
 	param.top_p = 0.9f;
+
+	/*temperature，
+	 *emperature（温度）：在抽下一个 token 之前，把概率分布「拉平」或「拉尖」。
+	 *低（如 0.2）：更偏向高概率词 → 更稳、更死板
+	 *高（如 1.2）：分布更平均 → 更活、更易跑偏
+	 *1.0 附近：相对接近模型原始分布
+	*/
 	param.temperature = 0.8f;
+
+	/*repeat_penalty
+	 *重复惩罚：已经出现过的 token，再被选中时概率会被压低，减轻翻来覆去同一句/同一个词。
+	 *1.0：不惩罚
+	 *>1（你这里 1.1）：轻度抑制重复，常见默认档
+	 *太大：可能表达别扭、故意绕开常用词
+	*/
 	param.repeat_penalty = 1.1f;
+
+	/*skip_special_token
+	 *跳过特殊 token：生成结果里若出现模型内部用的特殊符号（如结束符、聊天模板标记、某些控制 token），不要把它们当作普通文字回给你。
+	 *true：回调/result->text 里尽量只有可读内容，适合直接刷到对话框。
+	 *false：特殊 token 也可能露出来，一般调试或特殊协议才用。
+	 *板端 UI 用 true 是合理默认。
+	*/
 	param.skip_special_token = true;
+
+	/*is_async
+	 *是否异步：让 RKLLM 后台偷偷跑，回调函数不阻塞 UI。
+	 *true：回调不阻塞 UI，UI 照常刷。但会慢一拍：结果出来时 UI 可能已经显示下一轮了。
+	 *false：回调阻塞 UI，UI 等它回来才刷。但会卡顿：结果出来前 UI 动不了。
+	 *本项目单独起了worker线程，阻塞读不影响主线程
+	 */
 	param.is_async = false;
 
+	//注册推理结果回调
 	memset(&cb, 0, sizeof(cb));
 	cb.result_callback = result_cb;
+	//回调函数私有结构体，单会话无需，NULL 即可
 	cb.result_userdata = NULL;
 
+	//初始化模型
 	handle = NULL;
 	ret = p_init(&handle, &param, &cb);
 	if (ret != 0 || !handle) {
@@ -412,6 +463,7 @@ static int create_handle(const char *model_path)
 	 * runtime's automatic enable_thinking handling — we still pass
 	 * enable_thinking=false and append /no_think on every user turn.
 	 */
+	//挂入 system 模板
 	if (p_set_chat_template)
 		p_set_chat_template(handle, SYSTEM_PROMPT, "", "");
 	return 0;
@@ -496,11 +548,17 @@ static void *worker_main(void *arg)
 // 初始化会话模块
 int session_init(void)
 {
+	//重置对话角色内容 S,U,A，设定S
 	hist_reset_keep_system();
+
+	//初始化token事件队列
 	tokq_init();
-	worker_stop = 0;
-	have_job = 0;
-	worker_live = 0;
+
+	//初始化worker线程状态参数
+	worker_stop = 0;//worker停止标志
+	have_job = 0;//worker是否有推理任务标志
+	worker_live = 0;//worker线程是否创建
+
 	return 0;
 }
 
@@ -522,28 +580,37 @@ void session_fini(void)
 	}
 }
 
+//加载会话模块
 int session_load(const char *model_path)
 {
 	const char *path = model_path;
-
+//路径为NULL，先获取模型路径--------------------------------
 	if (!path || !path[0])
+		//从环境变量中获取模型路径
 		path = getenv("LLM_PANEL_MODEL");
+		//如果环境变量中没有模型路径，使用默认模型路径
 	if (!path || !path[0])
 		path = LLM_PANEL_DEFAULT_MODEL;
-
+//-------------------------------------------------------
+	//复制模型路径到model_path_saved
 	strncpy(model_path_saved, path, sizeof(model_path_saved) - 1);
 	model_path_saved[sizeof(model_path_saved) - 1] = '\0';
 
+	//如果lib为空，打开lib
+	//dlopen("librkllmrt.so", ...)动态库，返回lib控制句柄
 	if (!lib && open_lib() != 0)
 		return -1;
 
+	//开始拉起会话前，如果有会话句柄先销毁
 	destroy_handle();
+
 	hist_reset_keep_system();
 
+	//初始化会话句柄
 	if (create_handle(path) != 0)
 		return -1;
 
-	loaded = 1;
+	loaded = 1;//设置会话模块加载标志
 	tokq_push(TOKQ_STATUS, "[模型已加载]");
 
 	if (!worker_live) {

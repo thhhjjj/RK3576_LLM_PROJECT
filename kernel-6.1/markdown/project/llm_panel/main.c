@@ -161,18 +161,21 @@ int main(int argc, char **argv)
 	// 主线程回到 while (!g_quit) 发现该退了就退出
 	signal(SIGINT, on_sig);//ctrl c退出
 	signal(SIGTERM, on_sig);//kill -pid退出
+
 	//初始化会话模块
 	session_init();
-	//sysfs 里找到 GPU 的 load 节点路径记录
+
+	//初始化指标模块
 	metrics_init();
 
 	/* Hard order: load RKLLM before LVGL widgets. */
 	printf("llm_panel: loading model (before LVGL)…\n");
 	//冲刷打印
 	fflush(stdout);
-	//加载模型
+
+	//加载模型会话模块
 	model_ok = (session_load(NULL) == 0);
-	//如果模型加载失败，打印错误信息
+	//如果会话模块加载失败，打印错误信息
 	if (!model_ok)
 		fprintf(stderr,
 			"llm_panel: no RKLLM yet — UI starts without model\n");
