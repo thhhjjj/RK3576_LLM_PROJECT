@@ -8,14 +8,14 @@
  */
 
 enum tokq_kind {
-	TOKQ_TOKEN = 0,
-	TOKQ_FINISH,
-	TOKQ_ERROR,
-	TOKQ_STATUS, /* human-readable status line for dialog */
+	TOKQ_TOKEN = 0,//token流式推出，可能一次性多个token
+	TOKQ_FINISH,   //token推出结束，用于换行
+	TOKQ_ERROR,    //推出错误，结束推出
+	TOKQ_STATUS,   //附加自定义状态，状态内容在自定义text
 };
 
 struct tokq_evt {//事件队列元素
-	enum tokq_kind kind; //事件类型
+	enum tokq_kind kind; //事件状态
 	char text[256]; //事件文本
 };
 

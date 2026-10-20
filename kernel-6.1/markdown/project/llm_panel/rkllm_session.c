@@ -472,18 +472,26 @@ static int create_handle(const char *model_path)
 static void *worker_main(void *arg)
 {
 	(void)arg;
+	//持锁进循环，等待推理任务
 	pthread_mutex_lock(&wlock);
 	while (!worker_stop) {
 		char user[MSG_MAX];
 		RKLLMInput input;
 		RKLLMInferParam infer;
 		int ret;
-
+		//等待推理任务
 		while (!have_job && !worker_stop)
+		/*
+		 *条件等待
+		 *放开 wlock（否则 session_ask 拿不到锁，没法投递任务）
+		 *线程 阻塞休眠，直到别人 pthread_cond_signal(&wcond)（session_ask / session_fini）
+		 */
 			pthread_cond_wait(&wcond, &wlock);
+		//如果worker线程停止，退出循环
 		if (worker_stop)
 			break;
 
+		//复制用户输入到user
 		strncpy(user, pending_user, sizeof(user) - 1);
 		user[sizeof(user) - 1] = '\0';
 		have_job = 0;
@@ -606,13 +614,14 @@ int session_load(const char *model_path)
 
 	hist_reset_keep_system();
 
-	//初始化会话句柄
+	//创建会话句柄，加载模型，配置模型初始参数
 	if (create_handle(path) != 0)
 		return -1;
 
-	loaded = 1;//设置会话模块加载标志
+	loaded = 1;//设置模型已加载标志
 	tokq_push(TOKQ_STATUS, "[模型已加载]");
 
+	//如果worker线程未创建，创建worker线程
 	if (!worker_live) {
 		worker_stop = 0;
 		if (pthread_create(&worker, NULL, worker_main, NULL) != 0) {
