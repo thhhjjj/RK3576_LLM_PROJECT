@@ -11,9 +11,10 @@
 | 2. 冒烟 / 试跑模型 | **已过（文本）**。Qwen3.5-2B VLM 语言侧 **W4A16_G128** @1024；点「试问」有中文短答（2026-10-18） |
 | 3. 改 `llm_panel` 进程结构 | **已过**。先 `session_load` 再 LVGL；`tokq`；worker 线程；预置「试问」 |
 | 4. Qwen3.5-2B 文本多轮 + 压缩 | **已过（基本）**。试问 + 手动压缩 + prefill 后上下文恢复（`0.0.6`，2026-10-18）；多轮打满 70% / 压缩后 Mem 回升 **待记全**。**压缩仍同步 → LVGL 假死，体验未过（见下「K」）** |
-| 5. 内存低水位与异常路径 | **代码已做**（`MemAvailable` &lt; 200MB → 告警 + 压缩，滞回解除）；板上极端低水位 **未实压**；低水位路径同样同步压缩，会卡屏 |
-| 6. 视觉通路 / 1.7B 对照 / 2048 | **未做**（`vision.rknn` 可后装；不挡文本验收） |
-| 7. 收口 | **未做**（模型是否烤进镜像、文档收口、对照表） |
+| 5. 内存低水位与异常路径 | **代码已做**（`MemAvailable` &lt; 200MB → 告警 + 压缩，滞回解除）。极端低水位板测、低水位同步压缩卡屏 → 移交 [project.md](../project.md) **第七阶段** |
+| 6. 视觉通路 / 1.7B 对照 / 2048 | **不做已过**（`vision.rknn` 可后装；不挡文本验收） |
+| 7. 再裁 rootfs / 关无用服务 | **未做**（PHASE2 后续，不挡完成线；见下「L」与 [PHASE2.md](./PHASE2.md)「后续工作」） |
+| 8. 收口 | **未做**（模型是否烤进镜像、文档收口、对照表） |
 
 **入口条件（PHASE1）**：屏 / 触摸 / Seekwave / 裁剪 Buildroot / `llm_ctrl` / `llm_panel`（中文）已过。
 
@@ -52,6 +53,9 @@
 | 试问后上下文 | 曾 **`549 / 1024`**（thinking 未截断时）；`0.0.4` 起截断 | 2026-10-18 |
 | 多轮接近水位 / 压缩后 | | |
 | 挂上 vision.rknn 后 | | |
+| 再裁服务前（加载模型后对照） | | |
+| 再裁服务后（无模型基线） | | |
+| 再裁服务后（加载模型后） | | |
 
 ---
 
@@ -115,13 +119,18 @@
 
 - 压缩按钮 → `session_compress`；上下文 **70%** 自动压缩。
 - **`MemAvailable` &lt; 200MB**：对话区告警并触发一次压缩；&gt;250MB 解除闩锁（`main.c`，`vtest：0.0.5`）。
-- 缺模型：UI「未加载」，进程不崩。板上打到 &lt;200MB **未实压**。
+- 缺模型：UI「未加载」，进程不崩。板上打到 &lt;200MB 极端低水位、低水位路径不卡屏 → **第七阶段**验收（本阶段只保证代码路径在）。
 
 ### 6. 可选压测 — **未做**
 
 ### 7. 收口 — **未做**
 
 是否烤 `QWEN3.5_2B.rkllm` 进镜像；冷启动清单；完成线七条核对。
+
+### 8. 再裁 rootfs / 关无用服务 — **未做**（后续）
+
+目的：在 PHASE1 已裁镜像之上，再关 Docker / 桌面 / 多余 daemon，争取 **几十～约 100～200 MB** `MemAvailable`，给更长上下文留余量。  
+不挡完成线；压缩异步（**K**）优先。口径与步骤见 [PHASE2.md](./PHASE2.md)「后续工作」与步骤 27–30。
 
 ---
 
@@ -167,7 +176,8 @@ Buildroot output 无 libgomp；`librkllmrt` 依赖它。
 
 ### I. 内存低水位（步骤 18）
 
-`metrics_timer_cb` 读 `MemAvailable`；&lt;200MB 告警 + `session_compress`，滞回 250MB。
+`metrics_timer_cb` 读 `MemAvailable`；&lt;200MB 告警 + `session_compress`，滞回 250MB。  
+极端低水位板测、以及低水位触发仍同步压缩会卡屏 → 不挡 PHASE2 代码勾选，收进 [project.md](../project.md) **第七阶段**。
 
 ### J. 压缩后上下文归零
 
@@ -181,6 +191,15 @@ Buildroot output 无 libgomp；`librkllmrt` 依赖它。
 **根因**：`on_ui_compress` / `metrics_timer_cb` 在 LVGL 线程同步调 `session_compress()`（destroy → 整模 `create_handle` → `prefill_retained_hist`），堵住 `lv_timer_handler`。worker 路径上的压缩不堵 UI；**按钮与低水位这两条会堵**。
 
 **应对（未做）**：与 `session_ask` 对齐——主线程只投递压缩任务；worker 执行；`tokq` 推 `[压缩完成]` / 失败；压缩中拒 ask、防重复点。改完后验收：压缩全程六项指标仍刷新。
+
+### L. 再裁 rootfs / 关无用服务（后续，未做）
+
+**动机**：冲更长上下文时，系统常驻仍可能白占几十～一两百 MB Available；值得在模型侧手段之外做第二轮用户态裁剪。
+
+**范围**：盘点并禁用确认无用的自启（Docker、桌面会话、未用中间件等）；可只关自启、保留后续阶段软件包。  
+**红线**：不砍 NPU/DRM/CMA、Seekwave、指标用的 proc/sysfs（同 [project.md](../project.md) 裁剪红线）。
+
+**验收**：裁前/裁后各记无模型基线与加载模型后 `MemAvailable`（填上表空行）；DID 写明关掉的单元名与差值。无明显回升则停止空砍。
 
 细节口诀见 [version_must_care.md](./version_must_care.md)。
 
@@ -202,6 +221,6 @@ adb shell 'grep -E "model=|loaded|skip leading|cut trailing" /tmp/llm_panel.log 
 
 - **已过（继承 PHASE1）**：MIPI、FTS、Seekwave、裁剪 Buildroot、`llm_ctrl`、`llm_panel` 显示+触摸+中文。  
 - **本阶段已过**：RKLLM 1.3.1 + libgomp；先 load 再 UI；Qwen3.5-2B W4A16_G128 文本试问；thinking 抑制；内存低水位压缩（代码）；压缩后 prefill（`0.0.6`）；版本标签快验。  
-- **已知体验问题**：压缩同步跑在 LVGL 线程 → 整屏卡死（见 **K**）；影响正式体验，须异步化后再算压缩合格。  
-- **下一步**：**压缩异步化（优先）**；多轮/手动压缩后记 `MemAvailable`；收口是否烤模型。  
-- **不做**：WebSocket、GATT、云端 SSE、frpc、拼音输入法。
+- **已知体验问题**：压缩同步跑在 LVGL 线程 → 整屏卡死（见 **K**）；低水位同路径。异步化 + 极端低水位实压 → **第七阶段**（PHASE2 代码路径已在）。  
+- **下一步**：多轮/手动压缩后记 `MemAvailable`；收口是否烤模型；其后做 **再裁 rootfs / 关无用服务（L，步骤 27–30）**；卡屏/低水位板测见第七阶段。  
+- **不做**：WebSocket、GATT、云端 SSE、frpc、拼音输入法（本阶段仍不开；裁服务时勿误删后续要用的包，可先只关自启）。

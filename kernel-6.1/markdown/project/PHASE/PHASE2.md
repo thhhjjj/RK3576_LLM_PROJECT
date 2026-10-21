@@ -117,6 +117,21 @@ LVGL 不是线程安全的：推理线程只许 `lv_async_call` 或等价投递�
 - 低于阈值（建议先 **200MB**，按曲线改）时：UI 告警，并**异步**触发一次压缩；压缩中不重入。
 - 每次：冒烟加载后、1.7B 加载后、多轮跑满后、压缩后再各记一笔，写入 [PHASE2_DID.md](./PHASE2_DID.md)。
 
+## 后续工作（不挡本阶段完成线）：再挤 Available
+
+> 目标：给更长上下文 / 更大模型余量腾 **几十～约一两百 MB** `MemAvailable`。不替代换更小 `.rkllm` 或 `embed_flash`；也**不**把「裁服务」写成 10k 上下文的充分条件。
+
+PHASE1 已做过一轮 Buildroot 裁剪；本项是 **第二轮：关无用用户态常驻**，在文本通路与压缩异步过线之后做。
+
+| 做 | 不做 / 红线 |
+|---|---|
+| 盘点开机自启与常驻进程（`systemd`/`init.d`、多余 daemon） | 不砍 `ROCKCHIP_RKNPU`、DRM、CMA/DMA heap、Seekwave WiFi/BT、指标用的 procfs/sysfs |
+| 确认无 Docker / 桌面会话 / 未用中间件则卸或禁用 | 不提前为「省内存」砍小 CMA |
+| 关本阶段用不到的服务（未开 WebSocket/GATT/frpc 前勿常驻相关栈） | 不关后续阶段仍要的包本身（可先禁用自启，包可留在镜像） |
+| 裁前 / 裁后各记一笔：无模型基线与 **模型加载后** 的 `MemAvailable`、面板已用/总计 | 不把预期收益写成固定数字；以板上两次对比为准 |
+
+验收记入 [PHASE2_DID.md](./PHASE2_DID.md)：列出关掉的单元名、Available 差值。收益量级预期 **几十～约 100～200 MB**；不够再走换 1.7B / 开 `embed_flash` / 更短真窗口 + 压缩。
+
 ## UI 在本阶段要接通的部分
 
 | 控件 / 标签 | PHASE1 | PHASE2 |
@@ -195,3 +210,10 @@ LVGL 不是线程安全的：推理线程只许 `lv_async_call` 或等价投递�
 24. 重启冷启动：不手工 `insmod`、不手工拷 so，默认 1.7B 可聊，压缩可用。
 25. 核对完成线七条全部成立；第三阶段才允许开 WebSocket。
 26. 把版本、路径、各次 `MemAvailable`、已知问题写入 [PHASE2_DID.md](./PHASE2_DID.md)。
+
+### 8. 后续：再裁 rootfs / 关无用服务（不挡出口）
+
+27. 列出当前常驻：`ps` / `systemctl`（或板端等价），标出 Docker、桌面、未用 daemon。
+28. 禁用或卸载确认无用的自启单元；保留 PHASE 后续仍要的软件包时可只关自启。
+29. 冷启动后记：无模型 Available、加载默认模型后 Available / 面板已用；与裁前对比写入 DID。
+30. 若 Available 无明显回升：记录「已排查无大户」，停止空砍；改走模型侧手段（更小权重、`embed_flash`）。
