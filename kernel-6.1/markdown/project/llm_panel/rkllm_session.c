@@ -69,7 +69,7 @@ static pthread_mutex_t wlock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wcond = PTHREAD_COND_INITIALIZER;
 static int worker_live;
 static int worker_stop;
-static int have_job;
+static int have_job;//有未复制内容
 static char pending_user[MSG_MAX];
 
 static int gen_tokens;
@@ -479,7 +479,7 @@ static void *worker_main(void *arg)
 		RKLLMInput input;
 		RKLLMInferParam infer;
 		int ret;
-		//等待推理任务
+		//等待推理任务，have_job为1，且未worker_stop，则进入线程
 		while (!have_job && !worker_stop)
 		/*
 		 *条件等待
@@ -491,10 +491,10 @@ static void *worker_main(void *arg)
 		if (worker_stop)
 			break;
 
-		//复制用户输入到user
+		//复制用户输入pending_user到user
 		strncpy(user, pending_user, sizeof(user) - 1);
 		user[sizeof(user) - 1] = '\0';
-		have_job = 0;
+		have_job = 0;//搬移结束
 		pthread_mutex_unlock(&wlock);
 
 		if (!loaded || !handle) {
@@ -640,28 +640,40 @@ int session_loaded(void)
 	return loaded;
 }
 
+/*
+ * 
+ * 参数：用户输入文本
+ * 返回：0 成功，-1 失败
+*/
 int session_ask(const char *user_text)
 {
-	if (!user_text || !user_text[0] || !loaded)
+	if (!user_text || !user_text[0] || !loaded)//用户输入文本为空，或模型未加载，则返回失败
 		return -1;
 
-	pthread_mutex_lock(&wlock);
-	/* Prior abort can leave is_running sticky — clear then accept. */
+	pthread_mutex_lock(&wlock);//加锁，保护与worker_main线程并发共享的pending_user，have_job，worker_stop，wcond资源
+	
+	/* 
+	 *handle:当前 RKLLM 会话句柄；NULL 表示还没 init / 已销毁
+	 *p_is_running:dlsym 出来的函数指针，对应 so 里的 rkllm_is_running，判断p_is_running函数是否存在，可能为 NULL
+	 *p_is_running(handle)=rkllm_is_running(handle):调用该函数,判断这个句柄是否仍在生成中
+	 */
 	if (handle && p_is_running && p_is_running(handle)) {
-		if (p_abort)
+		if (p_abort)//如果p_abort函数存在，则中止模型运行
 			p_abort(handle);
-		pthread_mutex_unlock(&wlock);
-		usleep(50000);
+		pthread_mutex_unlock(&wlock);//解锁，释放资源，等worker线程把p_is_running的running状态清掉，
+		usleep(50000);//等待50ms
 		pthread_mutex_lock(&wlock);
 	}
+	//如果还在运行，中止未停止，且还有推送have_job任务，先非阻塞返回-1
 	if (have_job || (handle && p_is_running && p_is_running(handle))) {
 		pthread_mutex_unlock(&wlock);
 		return -1;
 	}
+	//模型未在运行，则复制用户输入文本到pending_user
 	strncpy(pending_user, user_text, sizeof(pending_user) - 1);
 	pending_user[sizeof(pending_user) - 1] = '\0';
 	have_job = 1;
-	pthread_cond_signal(&wcond);
+	pthread_cond_signal(&wcond);//唤醒worker线程，处理have_job
 	pthread_mutex_unlock(&wlock);
 	return 0;
 }

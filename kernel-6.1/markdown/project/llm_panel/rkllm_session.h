@@ -16,11 +16,11 @@
 #define LLM_PANEL_COMPRESS_WATER_PCT 70
 
 struct session_stats {
-	int loaded;
-	int running;
-	int ctx_tokens; /* best-effort from kv cache; -1 if unknown */
-	int max_context;
-	float token_per_s; /* last completed round */
+	int loaded;			//是否加载
+	int running;		//是否正在生成token(查rkllm_is_running句柄，NULL/API不存在，则认为不在生成)
+	int ctx_tokens; 	//当前上下文大约用了多少 token（来自 KV 查询的 last_ctx；未知时可能是 -1）
+	int max_context;	//最大上下文大小
+	float token_per_s; 	//上一轮已完成的生成速度（不是实时瞬时值）
 };
 
 int session_init(void);
