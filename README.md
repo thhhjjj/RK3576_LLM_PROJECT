@@ -40,15 +40,7 @@ makediff/
 
 ---
 
-## 2. Mac：改代码 → 提交差分
-
-1. 在 Mac 的 SDK 或本目录改文件后，**确保同步进 `Desktop/makediff` 对应路径**（相对路径一致）。
-2. 在 makediff 所在 git 仓提交并推送（不要推整棵 SDK）。
-3. 大文件：`buildroot/dl/lvgl|lv_drivers/*.tar.gz` 一并纳入差分仓（主 SDK 的 `buildroot/.gitignore` 会忽略 `/dl`）。
-
----
-
-## 3. Ubuntu：落地 → 编译
+## 2. Ubuntu：落地 → 编译
 
 在 **SDK 根目录**（含 `kernel-6.1/`）：
 
@@ -116,7 +108,7 @@ rm -f buildroot/output/rockchip_rk3576_kickpi_k7c_llm/.config
 
 ---
 
-## 4. 刷机与板上检查
+## 3. 刷机与板上检查
 
 ```bash
 # rootfs 镜像常见位置
@@ -135,7 +127,7 @@ adb shell 'ls -l /usr/bin/llm_panel; ls /etc/init.d/S39llm_ctrl /etc/init.d/S90l
 
 ---
 
-## 6. 和「补丁仓」的关系
+## 4. 和「补丁仓」的关系
 
 完整 SDK 仍可用 `scripts/gen_patches.sh` / `apply_patches.sh` 管理长期补丁。  
 **当前 PHASE1 日常同步以本 makediff overlay 为准**：改 → 同步进 makediff → git 推轻量仓 → Ubuntu `git_push_must_change.sh` 落地 → `build.sh`。
