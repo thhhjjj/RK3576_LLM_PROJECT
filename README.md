@@ -116,23 +116,7 @@ rm -f buildroot/output/rockchip_rk3576_kickpi_k7c_llm/.config
 
 ---
 
-## 4. 已知坑（已在差分里修过）
-
-| 现象 | 原因 | 差分侧对策 |
-|------|------|------------|
-| `No rule to make target 'lv-drivers'` | 包名是 `lv_drivers` | `llm_panel.mk` 用下划线 |
-| `recursive dependency detected` | `select LVGL_USE_DRM` 撞 choice | `Config.in` 只 `depends on` |
-| `lvgl` download 404 / GitHub 拒连 | VM 网络 | `buildroot/dl/...tar.gz` 离线包 |
-| `undefined reference` FT_* | 未链 freetype | `CMakeLists` + DEPENDENCIES |
-| `undefined reference` evdev_* | Rockchip `lv_drivers` 未编 USE_EVDEV | 自带 `llm_panel/evdev.c` |
-| 中文方块 / 乱码 | 未装字库 | `llm_panel/fonts/SourceHanSansCN-Regular.otf` → `/usr/share/fonts/source-han-sans-cn/`（~8MB CN Subset） |
-| 面板提示「未加载」 | 无 runtime/模型 | `rkllm_autoload/librkllmrt.so` + `models/default.rkllm` → 落地 → 重编 rootfs |
-
-落地后若 SDK 里仍是旧文件，用强制拷贝再验收（见上一节 `grep`），不要只信 makediff 目录本身。
-
----
-
-## 5. 刷机与板上检查
+## 4. 刷机与板上检查
 
 ```bash
 # rootfs 镜像常见位置
