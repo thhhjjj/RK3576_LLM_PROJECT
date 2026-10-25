@@ -24,6 +24,7 @@ add_executable(llm_panel
 	gpu_probe.c
 	gpu_disp.c
 	npu_dvfs.c
+	backlight.c
 )
 
 target_link_libraries(llm_panel

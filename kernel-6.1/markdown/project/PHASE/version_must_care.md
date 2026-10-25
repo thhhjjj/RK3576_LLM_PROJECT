@@ -98,3 +98,15 @@ ls -lh rkllm_autoload/models/QWEN3.5_2B.rkllm \
 makediff 有？ → SDK kernel-6.1/... 有？ → target strings 有？ → 再刷
      ↑ git_push(bash)      ↑ dirclean+rebuild      ↑ 没有就停
 ```
+
+
+bash makediff/git_push_must_change.sh makediff
+OUT=buildroot/output/rockchip_rk3576_kickpi_k7c_llm
+rm -f kernel-6.1/markdown/project/llm_panel/Makefile
+make -C buildroot O=$PWD/$OUT llm_panel-dirclean llm_panel-rebuild
+strings $OUT/target/usr/bin/llm_panel | grep 0.9.17
+cp -v $OUT/target/usr/bin/llm_panel ~/Desktop/
+
+
+adb push ~/Desktop/llm_panel /usr/bin/llm_panel
+adb shell 'chmod 755 /usr/bin/llm_panel; killall llm_panel; sleep 1; /usr/bin/llm_panel >/tmp/llm_panel.log 2>&1 &'

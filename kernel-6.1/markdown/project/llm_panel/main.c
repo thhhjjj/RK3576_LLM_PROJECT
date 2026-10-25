@@ -24,8 +24,9 @@
 
 static volatile int g_quit;
 
-/* PHASE2: MemAvailable low-water (MB) → warn + one compress. */
+/* PHASE2/7-D: MemAvailable 低水位 (MB)；NPU 超温 abort */
 #define MEM_LOW_WATER_MB 200
+#define NPU_TEMP_ABORT_C 90
 
 //退出回调置回调信号
 static void on_sig(int sig)
@@ -37,12 +38,12 @@ static void on_sig(int sig)
 static void on_ui_compress(void)
 {
 	if (ui_mode_is_cloud()) {
-		ui_append_dialog("\n[云端模式无本地 KV，压缩跳过]\n");
+		ui_append_dialog("云端模式无本地 KV，压缩跳过");
 		return;
 	}
-	ui_append_dialog("\n[压缩中…]\n");
+	/* PHASE7-C：只排队，摘要+重建在 worker，不堵 LVGL */
 	if (session_compress() != 0)
-		ui_append_dialog("[压缩失败]\n");
+		ui_append_dialog("压缩忙或未加载");
 }
 
 /* 统一提问入口：本地 RKLLM 或云端 DeepSeek（屏 / WS 共用）。 */
@@ -64,6 +65,19 @@ static int panel_ask(const char *q)
 	return session_ask(q);
 }
 
+static void on_ui_stop(void)
+{
+	if (ui_mode_is_cloud()) {
+		cloud_sse_abort();
+		ui_chat_assistant_end();
+		ui_append_dialog("已请求停止云端");
+		return;
+	}
+	session_abort();
+	ui_chat_assistant_end();
+	ui_append_dialog("已请求停止，等待本轮结束…");
+}
+
 static void on_ui_ask(void)
 {
 	const char *q = session_smoke_question();
@@ -71,26 +85,37 @@ static void on_ui_ask(void)
 	if (ui_mode_is_cloud()) {
 		if (!cloud_sse_has_key()) {
 			ui_append_dialog(
-				"\n[云端无 Key：启动前 export DEEPSEEK_API_KEY=… "
-				"（仅内存，不落盘）]\n");
+				"云端无 Key：启动前 export DEEPSEEK_API_KEY=… "
+				"（仅内存，不落盘）");
 			return;
 		}
-		ui_append_dialog("\n你: ");
-		ui_append_dialog(q);
-		ui_append_dialog("\n助手(云): ");
-		if (panel_ask(q) != 0)
-			ui_append_dialog("[云端忙或失败]\n");
+		if (cloud_sse_busy()) {
+			ui_append_dialog("云端生成中，先点「停止」");
+			return;
+		}
+		ui_chat_user(q);
+		ui_chat_assistant_begin();
+		if (panel_ask(q) != 0) {
+			ui_chat_assistant_end();
+			ui_append_dialog("云端忙或失败");
+		}
 		return;
 	}
 	if (!session_loaded()) {
-		ui_append_dialog("\n[无模型：把 librkllmrt.so + QWEN3.5_2B.rkllm 放进镜像]\n");
+		ui_append_dialog(
+			"无模型：把 librkllmrt.so + QWEN3.5_2B.rkllm 放进镜像");
 		return;
 	}
-	ui_append_dialog("\n你: ");
-	ui_append_dialog(q);
-	ui_append_dialog("\n助手: ");
-	if (panel_ask(q) != 0)
-		ui_append_dialog("[忙或失败]\n");
+	if (session_gen_busy()) {
+		ui_append_dialog("生成/压缩中，先点「停止」或等结束");
+		return;
+	}
+	ui_chat_user(q);
+	ui_chat_assistant_begin();
+	if (panel_ask(q) != 0) {
+		ui_chat_assistant_end();
+		ui_append_dialog("忙或失败");
+	}
 }
 
 static void on_ui_mode(int cloud)
@@ -98,12 +123,13 @@ static void on_ui_mode(int cloud)
 	/* 切换时先停掉正在生成的那一路 */
 	if (cloud) {
 		session_abort();
-		ui_append_dialog(cloud_sse_has_key() ?
-					 "\n[已切云端 DeepSeek]\n" :
-					 "\n[已切云端，但无 API Key]\n");
+		ui_chat_assistant_end();
+		ui_append_dialog(cloud_sse_has_key() ? "已切云端 DeepSeek" :
+						       "已切云端，但无 API Key");
 	} else {
 		cloud_sse_abort();
-		ui_append_dialog("\n[已切本地]\n");
+		ui_chat_assistant_end();
+		ui_append_dialog("已切本地");
 	}
 }
 
@@ -116,25 +142,22 @@ static void drain_tokq(void)
 	while (tokq_pop(&ev)) {
 		switch (ev.kind) {
 		case TOKQ_TOKEN:
-			ui_append_dialog(ev.text);
+			ui_chat_append_token(ev.text);
 			break;
 		case TOKQ_FINISH:
-			ui_append_dialog("\n");
+			ui_chat_assistant_end();
 			session_get_stats(&st);
 			ui_set_ctx_tps(st.ctx_tokens, st.max_context,
 				       st.token_per_s);
 			break;
 		case TOKQ_ERROR:
-			ui_append_dialog("\n[");
+			ui_chat_assistant_end();
 			ui_append_dialog(ev.text[0] ? ev.text : "错误");
-			ui_append_dialog("]\n");
 			break;
 		case TOKQ_STATUS:
-			if (ev.text[0]) {
-				ui_append_dialog("\n");
+			/* 状态条：不打断进行中的助手气泡（压缩提示等） */
+			if (ev.text[0])
 				ui_append_dialog(ev.text);
-				ui_append_dialog("\n");
-			}
 			session_get_stats(&st);
 			ui_set_ctx_tps(st.ctx_tokens, st.max_context,
 				       st.token_per_s);
@@ -168,7 +191,30 @@ static void metrics_timer_cb(lv_timer_t *t)
 	if (st.loaded)
 		ui_set_ctx_tps(st.ctx_tokens, st.max_context, st.token_per_s);
 
-	if ((m.valid & METRICS_HAVE_MEM) && session_loaded()) {
+	/* PHASE7-D：超温 abort，降到阈值以下再清条 */
+	{
+		static int ot_latched;
+
+		if ((m.valid & METRICS_HAVE_NPU_TEMP) &&
+		    m.npu_temp_c >= NPU_TEMP_ABORT_C) {
+			ui_show_overtemp(m.npu_temp_c);
+			if (!ot_latched) {
+				ot_latched = 1;
+				session_abort();
+				cloud_sse_abort();
+				ui_chat_assistant_end();
+				ui_append_dialog("NPU 超温，已停止生成");
+			}
+		} else if (ot_latched &&
+			   (!(m.valid & METRICS_HAVE_NPU_TEMP) ||
+			    m.npu_temp_c < NPU_TEMP_ABORT_C - 10)) {
+			ot_latched = 0;
+			ui_clear_overtemp();
+		}
+	}
+
+	if ((m.valid & METRICS_HAVE_MEM) && session_loaded() &&
+	    !ui_mode_is_cloud()) {
 		unsigned long long avail_mb = m.mem_available_kb / 1024;
 
 		if (avail_mb < MEM_LOW_WATER_MB) {
@@ -177,14 +223,13 @@ static void metrics_timer_cb(lv_timer_t *t)
 
 				mem_low_latched = 1;
 				snprintf(buf, sizeof(buf),
-					 "\n[内存低水位 %llu MB < %d MB，触发压缩]\n",
+					 "内存低水位 %llu MB < %d MB，触发压缩",
 					 avail_mb, MEM_LOW_WATER_MB);
 				ui_append_dialog(buf);
 				if (session_compress() != 0)
-					ui_append_dialog("[低水位压缩失败]\n");
+					ui_append_dialog("低水位压缩忙");
 			}
 		} else if (avail_mb > MEM_LOW_WATER_MB + 50) {
-			/* Hysteresis: clear latch when recovered. */
 			mem_low_latched = 0;
 		}
 	}
@@ -257,21 +302,21 @@ int main(int argc, char **argv)
 		fprintf(stderr, "llm_panel: using montserrat fallback (no CJK)\n");
 
 	ui_set_actions(on_ui_compress, on_ui_ask);
+	ui_set_stop_action(on_ui_stop);
 	ui_set_mode_hook(on_ui_mode);
 	ui_create();
 	ui_set_model_status(model_ok ? "已加载" : "未加载");
 	if (model_ok)
 		ui_append_dialog(
-			"[PHASE3] 本地可聊；开关切云端=DeepSeek SSE。"
-			"Key: DEEPSEEK_API_KEY。WS :8765\n");
+			"本地可聊；设置里可切云端 DeepSeek。WS :8765");
 	else
 		ui_append_dialog(
-			"[PHASE3] 无本地模型；可切云端（需 Key）。WS :8765\n");
+			"无本地模型；可切云端（需 Key）。WS :8765");
 	if (cloud_sse_has_key())
-		ui_append_dialog("[云端 Key 已从环境变量载入（仅内存）]\n");
+		ui_append_dialog("云端 Key 已从环境变量载入（仅内存）");
 	else
 		ui_append_dialog(
-			"[无云端 Key：export DEEPSEEK_API_KEY=… 后重启 panel]\n");
+			"无云端 Key：export DEEPSEEK_API_KEY=… 后重启 panel");
 
 	/* 100ms 刷一次指标 / 抽 tokq / 低水位压缩 */
 	lv_timer_create(metrics_timer_cb, 100, NULL);
@@ -284,19 +329,16 @@ int main(int argc, char **argv)
 	while (!g_quit) {
 		uint32_t delay;
 
-		/* PHASE7-E（并入 PHASE6）：GPU 路径每圈整屏脏，稳住约 60fps */
-		if (gpu_disp_active())
+		/* GPU：60 目标时每圈整屏脏；30 目标交给 LVGL dirty + refr≈33ms */
+		if (gpu_disp_active() && ui_fps_target_hz() >= 60)
 			lv_obj_invalidate(lv_scr_act());
 
 		delay = lv_timer_handler();
 		if (gpu_disp_active()) {
-			/*
-			 * PageFlip 已在垂直同步上阻塞约 16ms。
-			 * 这里再 sleep 会把帧率压到约 30–40（板上曾测得 39）。
-			 */
+			/* PageFlip 已等 vsync；勿再 sleep 叠帧 */
 			delay = 0;
 		} else if (delay > 50) {
-			delay = 50; /* dumb 路径：限制空闲休眠上限 */
+			delay = 50;
 		}
 		if (delay)
 			usleep(delay * 1000);

@@ -19,7 +19,7 @@
 #define CLOUD_MODEL "deepseek-chat"
 #define KEY_MAX 256
 #define PROMPT_MAX 1500
-#define LINE_MAX 2048
+#define SSE_LINE_MAX 2048
 
 static char g_key[KEY_MAX];
 static pthread_mutex_t g_key_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -37,7 +37,7 @@ static char g_pending[PROMPT_MAX];
 static CURL *g_curl; /* only touched on worker thread while busy */
 
 struct write_ctx {
-	char line[LINE_MAX];
+	char line[SSE_LINE_MAX];
 	size_t len;
 	int saw_token;
 };

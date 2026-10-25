@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * PHASE2: dlopen librkllmrt, history + compress, worker thread for rkllm_run.
- * Callback only pushes to tokq — never touches LVGL.
+ * PHASE2/7: dlopen librkllmrt；worker 跑 ask + 异步压缩摘要。
+ * 回调只推 tokq，不碰 LVGL。
  */
 
 #include "rkllm_session.h"
@@ -21,6 +21,11 @@
 #define HIST_MAX 32
 #define MSG_MAX 4096
 #define PROMPT_MAX (256 * 1024)
+/* PHASE7-C：近轮原文条数（不含 s / m）；摘要生成上限 */
+#define KEEP_RECENT 4
+#define SUMMARY_MAX_NEW 256
+/* PHASE7-D：单次 prefill 文本上限，超出则分段 keep_history 喂入 */
+#define PREFILL_CHUNK 2048
 
 static const char *SYSTEM_PROMPT =
 	"你是嵌入式 Linux 助手，擅长 C、设备树、RK 驱动；回答务必简洁。"
@@ -60,6 +65,7 @@ static fn_set_chat_template p_set_chat_template;
 static LLMHandle handle;
 static int loaded;
 static int compressing;
+static volatile int gen_inflight; /* PHASE7-D：生成未结束（含 abort 后至 FINISH） */
 static char model_path_saved[512];
 
 static struct hist_msg hist[HIST_MAX];
@@ -70,7 +76,8 @@ static pthread_mutex_t wlock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wcond = PTHREAD_COND_INITIALIZER;
 static int worker_live;
 static int worker_stop;
-static int have_job;//有未复制内容
+static int have_job; /* 有待推理的用户问 */
+static int have_compress; /* PHASE7-C：异步压缩排队 */
 static char pending_user[MSG_MAX];
 
 static int gen_tokens;
@@ -89,25 +96,69 @@ static int drop_thinking;
 static int skip_pre_think;
 /* Compress rebuild: feed retained hist into new handle without showing tokens. */
 static int prefilling;
+/* PHASE7-C：摘要推理中，token 进 summary_acc，不刷对话区 */
+static int summarizing;
+static char summary_acc[MSG_MAX];
+static size_t summary_acc_n;
 
-//重置对话历史，只保留系统提示词
+static int compress_do_work(void);
+
+//重置对话历史，只保留系统提示词（人设只在这里写入，之后只读）
 static void hist_reset_keep_system(void)
 {
 	hist_n = 0;
-	hist[0].role = 's';//system 主题与人设
-	strncpy(hist[0].text, SYSTEM_PROMPT, MSG_MAX - 1);//复制系统提示词到hist[0].text
+	hist[0].role = 's';
+	strncpy(hist[0].text, SYSTEM_PROMPT, MSG_MAX - 1);
 	hist[0].text[MSG_MAX - 1] = '\0';
 	hist_n = 1;
 }
 
+/* 摘要条：插在 hist[0] 之后；已有 'm' 则只换正文，绝不改 hist[0] */
+static void hist_set_memory(const char *summary)
+{
+	char buf[MSG_MAX];
+
+	if (!summary || !summary[0])
+		return;
+	snprintf(buf, sizeof(buf), "摘要: %s", summary);
+	if (hist_n >= 2 && hist[1].role == 'm') {
+		strncpy(hist[1].text, buf, MSG_MAX - 1);
+		hist[1].text[MSG_MAX - 1] = '\0';
+		return;
+	}
+	if (hist_n >= HIST_MAX) {
+		/* 腾一位：丢掉最旧正文轮，不动 s */
+		int i, drop = (hist_n > 2 && hist[1].role == 'm') ? 2 : 1;
+
+		for (i = drop; i < hist_n - 1; i++)
+			hist[i] = hist[i + 1];
+		hist_n--;
+	}
+	{
+		int i;
+
+		for (i = hist_n; i > 1; i--)
+			hist[i] = hist[i - 1];
+		hist[1].role = 'm';
+		strncpy(hist[1].text, buf, MSG_MAX - 1);
+		hist[1].text[MSG_MAX - 1] = '\0';
+		hist_n++;
+	}
+}
+
 static void hist_push(char role, const char *text)
 {
+	if (role == 's' || role == 'm')
+		return; /* 人设/摘要走专用路径 */
 	if (hist_n >= HIST_MAX) {
 		int i;
+		int drop;
 
 		if (hist_n <= 1)
 			return;
-		for (i = 1; i < hist_n - 1; i++)
+		/* 永不挤掉 hist[0]；有摘要则从摘要后开始挤 */
+		drop = (hist_n > 2 && hist[1].role == 'm') ? 2 : 1;
+		for (i = drop; i < hist_n - 1; i++)
 			hist[i] = hist[i + 1];
 		hist_n--;
 	}
@@ -180,13 +231,67 @@ static void trim_thinking_tail(void)
 	reply_acc_n = keep;
 }
 
+/* 去掉开头空白，以及尾部泄漏的 assistant/user 角色名 */
+static void strip_role_noise(void)
+{
+	size_t i, n;
+	int again = 1;
+	static const char *roles[] = { "assistant", "Assistant", "user",
+				       "User", "system", "System", NULL };
+
+	n = reply_acc_n;
+	i = 0;
+	while (i < n &&
+	       (reply_acc[i] == '\n' || reply_acc[i] == '\r' ||
+		reply_acc[i] == ' ' || reply_acc[i] == '\t'))
+		i++;
+	if (i > 0) {
+		memmove(reply_acc, reply_acc + i, n - i + 1);
+		n -= i;
+		reply_acc_n = n;
+	}
+
+	while (again) {
+		int r;
+
+		again = 0;
+		n = reply_acc_n;
+		while (n > 0 &&
+		       (reply_acc[n - 1] == '\n' || reply_acc[n - 1] == '\r' ||
+			reply_acc[n - 1] == ' ' || reply_acc[n - 1] == '\t')) {
+			reply_acc[--n] = '\0';
+			again = 1;
+		}
+		reply_acc_n = n;
+		for (r = 0; roles[r]; r++) {
+			size_t rn = strlen(roles[r]);
+
+			if (n >= rn &&
+			    memcmp(reply_acc + n - rn, roles[r], rn) == 0) {
+				char before = (n > rn) ? reply_acc[n - rn - 1] :
+							 '\n';
+
+				if (before == '\n' || before == '\r' ||
+				    before == ' ' || before == '\t' || n == rn) {
+					n -= rn;
+					reply_acc[n] = '\0';
+					reply_acc_n = n;
+					again = 1;
+					break;
+				}
+			}
+		}
+	}
+}
+
 static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 {
 	(void)userdata;
 
 	if (state == RKLLM_RUN_ERROR) {
-		if (prefilling)
+		if (prefilling || summarizing)
 			return 0;
+		gen_inflight = 0;
 		pthread_mutex_lock(&reply_lock);
 		reply_acc_n = 0;
 		reply_acc[0] = '\0';
@@ -209,6 +314,16 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 		if (prefilling) {
 			if (handle && p_abort)
 				p_abort(handle);
+			return 0;
+		}
+		/* PHASE7-C 摘要：只攒字，不上屏 */
+		if (summarizing) {
+			if (summary_acc_n + len < sizeof(summary_acc) - 1) {
+				memcpy(summary_acc + summary_acc_n, result->text,
+				       len);
+				summary_acc_n += len;
+				summary_acc[summary_acc_n] = '\0';
+			}
 			return 0;
 		}
 
@@ -300,9 +415,10 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 		struct timespec t1;
 		double sec;
 
-		if (prefilling)
+		if (prefilling || summarizing)
 			return 0;
 
+		gen_inflight = 0;
 		clock_gettime(CLOCK_MONOTONIC, &t1);
 		sec = (t1.tv_sec - gen_t0.tv_sec) +
 		      (t1.tv_nsec - gen_t0.tv_nsec) / 1e9;
@@ -314,6 +430,7 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 
 			pthread_mutex_lock(&reply_lock);
 			trim_thinking_tail();
+			strip_role_noise();
 			empty = (reply_acc_n == 0);
 			if (!empty)
 				hist_push('a', reply_acc);
@@ -475,29 +592,30 @@ static int create_handle(const char *model_path)
 static void *worker_main(void *arg)
 {
 	(void)arg;
-	//持锁进循环，等待推理任务
 	pthread_mutex_lock(&wlock);
 	while (!worker_stop) {
 		char user[MSG_MAX];
 		RKLLMInput input;
 		RKLLMInferParam infer;
 		int ret;
-		//等待推理任务，have_job为1，且未worker_stop，则进入线程
-		while (!have_job && !worker_stop)
-		/*
-		 *条件等待
-		 *放开 wlock（否则 session_ask 拿不到锁，没法投递任务）
-		 *线程 阻塞休眠，直到别人 pthread_cond_signal(&wcond)（session_ask / session_fini）
-		 */
+
+		while (!have_job && !have_compress && !worker_stop)
 			pthread_cond_wait(&wcond, &wlock);
-		//如果worker线程停止，退出循环
 		if (worker_stop)
 			break;
 
-		//复制用户输入pending_user到user
+		/* 压缩优先于新问，避免水位与手动压缩饿死 */
+		if (have_compress) {
+			have_compress = 0;
+			pthread_mutex_unlock(&wlock);
+			compress_do_work();
+			pthread_mutex_lock(&wlock);
+			continue;
+		}
+
 		strncpy(user, pending_user, sizeof(user) - 1);
 		user[sizeof(user) - 1] = '\0';
-		have_job = 0;//搬移结束
+		have_job = 0;
 		pthread_mutex_unlock(&wlock);
 
 		if (!loaded || !handle) {
@@ -517,6 +635,7 @@ static void *worker_main(void *arg)
 
 		gen_tokens = 0;
 		clock_gettime(CLOCK_MONOTONIC, &gen_t0);
+		gen_inflight = 1;
 
 		/*
 		 * Qwen3.5: thinking burns tokens + latency. Flag alone is not
@@ -542,6 +661,7 @@ static void *worker_main(void *arg)
 			ret = p_run(handle, &input, &infer, NULL);
 			npu_dvfs_restore();
 		}
+		gen_inflight = 0;
 		if (ret != 0)
 			tokq_push(TOKQ_ERROR, "rkllm_run 失败");
 
@@ -549,8 +669,11 @@ static void *worker_main(void *arg)
 		if (last_ctx > 0 &&
 		    last_ctx * 100 >=
 			    LLM_PANEL_MAX_CONTEXT * LLM_PANEL_COMPRESS_WATER_PCT) {
-			tokq_push(TOKQ_STATUS, "[自动压缩]");
-			session_compress();
+			/* PHASE7-D：70% 也走异步队列，与按钮/低水位一致 */
+			tokq_push(TOKQ_STATUS, "[自动压缩已排队]");
+			pthread_mutex_lock(&wlock);
+			have_compress = 1;
+			pthread_mutex_unlock(&wlock);
 		}
 
 		pthread_mutex_lock(&wlock);
@@ -655,25 +778,15 @@ int session_loaded(void)
 */
 int session_ask(const char *user_text)
 {
-	if (!user_text || !user_text[0] || !loaded)//用户输入文本为空，或模型未加载，则返回失败
+	if (!user_text || !user_text[0] || !loaded)
 		return -1;
 
-	pthread_mutex_lock(&wlock);//加锁，保护与worker_main线程并发共享的pending_user，have_job，worker_stop，wcond资源
-	
-	/* 
-	 *handle:当前 RKLLM 会话句柄；NULL 表示还没 init / 已销毁
-	 *p_is_running:dlsym 出来的函数指针，对应 so 里的 rkllm_is_running，判断p_is_running函数是否存在，可能为 NULL
-	 *p_is_running(handle)=rkllm_is_running(handle):调用该函数,判断这个句柄是否仍在生成中
-	 */
-	if (handle && p_is_running && p_is_running(handle)) {
-		if (p_abort)//如果p_abort函数存在，则中止模型运行
-			p_abort(handle);
-		pthread_mutex_unlock(&wlock);//解锁，释放资源，等worker线程把p_is_running的running状态清掉，
-		usleep(50000);//等待50ms
-		pthread_mutex_lock(&wlock);
+	pthread_mutex_lock(&wlock);
+	if (compressing || have_compress || gen_inflight || have_job) {
+		pthread_mutex_unlock(&wlock);
+		return -1; /* 压缩/生成未结束：须先停干净再问 */
 	}
-	//如果还在运行，中止未停止，且还有推送have_job任务，先非阻塞返回-1
-	if (have_job || (handle && p_is_running && p_is_running(handle))) {
+	if (handle && p_is_running && p_is_running(handle)) {
 		pthread_mutex_unlock(&wlock);
 		return -1;
 	}
@@ -690,87 +803,199 @@ void session_abort(void)
 {
 	if (handle && p_abort)
 		p_abort(handle);
+	/* gen_inflight 仍由 FINISH/ERROR 或 worker 清零 */
 }
 
-/* After destroy+create, KV is empty — re-feed retained hist (system already in template). */
+int session_gen_busy(void)
+{
+	return gen_inflight ||
+	       (handle && p_is_running && p_is_running(handle)) ||
+	       compressing || have_compress;
+}
+
+/* 喂一段 prefill（keep_history=1）；callback 里 prefilling 会立刻 abort 生成。 */
+static int prefill_one_chunk(const char *chunk)
+{
+	RKLLMInput input;
+	RKLLMInferParam infer;
+	int ret;
+
+	if (!chunk || !chunk[0] || !handle)
+		return 0;
+	memset(&input, 0, sizeof(input));
+	input.role = "user";
+	input.enable_thinking = false;
+	input.input_type = RKLLM_INPUT_PROMPT;
+	input.prompt_input = chunk;
+	memset(&infer, 0, sizeof(infer));
+	infer.mode = RKLLM_INFER_GENERATE;
+	infer.keep_history = 1;
+	infer.max_new_tokens = 1;
+	prefilling = 1;
+	npu_dvfs_boost();
+	ret = p_run(handle, &input, &infer, NULL);
+	npu_dvfs_restore();
+	prefilling = 0;
+	return ret;
+}
+
+/* After destroy+create：分段 prefill，降低一次灌满卡顿（PHASE7-D）. */
 static int prefill_retained_hist(void)
 {
 	static char buf[PROMPT_MAX];
 	size_t n = 0;
 	int i;
-	RKLLMInput input;
-	RKLLMInferParam infer;
-	int ret;
+	int chunks = 0;
+	int ret = 0;
 
 	if (!handle || hist_n <= 1)
 		return 0;
 
 	buf[0] = '\0';
 	for (i = 1; i < hist_n; i++) {
-		const char *tag = (hist[i].role == 'u') ? "用户: " : "助手: ";
-		size_t tl = strlen(tag);
-		size_t hl = strlen(hist[i].text);
+		const char *tag;
+		size_t tl, hl, need;
 
-		if (n + tl + hl + 2 >= sizeof(buf))
+		if (hist[i].role == 'u')
+			tag = "用户: ";
+		else if (hist[i].role == 'a')
+			tag = "助手: ";
+		else if (hist[i].role == 'm')
+			tag = "";
+		else
+			continue;
+		tl = strlen(tag);
+		hl = strlen(hist[i].text);
+		need = tl + hl + 1;
+		if (n > 0 && n + need >= PREFILL_CHUNK) {
+			ret = prefill_one_chunk(buf);
+			chunks++;
+			if (ret != 0)
+				break;
+			n = 0;
+			buf[0] = '\0';
+		}
+		if (n + need >= sizeof(buf))
 			break;
-		memcpy(buf + n, tag, tl);
-		n += tl;
+		if (tl) {
+			memcpy(buf + n, tag, tl);
+			n += tl;
+		}
 		memcpy(buf + n, hist[i].text, hl);
 		n += hl;
 		buf[n++] = '\n';
 		buf[n] = '\0';
 	}
-	if (n == 0)
-		return 0;
-
-	memset(&input, 0, sizeof(input));
-	input.role = "user";
-	input.enable_thinking = false;
-	input.input_type = RKLLM_INPUT_PROMPT;
-	input.prompt_input = buf;
-
-	memset(&infer, 0, sizeof(infer));
-	infer.mode = RKLLM_INFER_GENERATE;
-	infer.keep_history = 1;
-	infer.max_new_tokens = 1; /* just to land prompt in KV; callback aborts */
-
-	prefilling = 1;
-	npu_dvfs_boost();
-	ret = p_run(handle, &input, &infer, NULL);
-	npu_dvfs_restore();
-	prefilling = 0;
+	if (ret == 0 && n > 0) {
+		ret = prefill_one_chunk(buf);
+		chunks++;
+	}
 	if (ret != 0)
 		fprintf(stderr, "rkllm_session: prefill hist failed (%d)\n", ret);
 	else
-		fprintf(stderr, "rkllm_session: prefill hist ok (%d turns)\n",
-			hist_n - 1);
+		fprintf(stderr,
+			"rkllm_session: prefill hist ok (%d turns, %d chunk)\n",
+			hist_n - 1, chunks);
 	return ret;
 }
 
-int session_compress(void)
+/*
+ * PHASE7-C 实际压缩（须在 worker 线程调用）：
+ * 人设不动 → 旧轮摘要成 'm' → 留近轮 → destroy/create/prefill。
+ */
+static int compress_do_work(void)
 {
+	struct hist_msg keep[HIST_MAX];
+	int kn = 0;
 	int i;
+	int body0;
+	int keep_from;
+	char discard[PROMPT_MAX];
+	size_t dn = 0;
+	char summary[MSG_MAX];
 
-	if (!loaded || !model_path_saved[0] || compressing)
+	if (!loaded || !model_path_saved[0])
 		return -1;
-	/* Refuse while generate is in flight (UI path). Worker calls us only after run returns. */
-	if (handle && p_is_running && p_is_running(handle))
+	if (compressing)
 		return -1;
 	compressing = 1;
 	session_abort();
+	tokq_push(TOKQ_STATUS, "[摘要压缩中…]");
 
-	if (hist_n > 5) {
-		struct hist_msg keep[HIST_MAX];
-		int kn = 0;
+	/* hist[0] 人设只复制，永不改写内容 */
+	keep[kn++] = hist[0];
 
-		keep[kn++] = hist[0];
-		for (i = hist_n - 4; i < hist_n; i++) {
-			if (i >= 1)
-				keep[kn++] = hist[i];
+	body0 = (hist_n >= 2 && hist[1].role == 'm') ? 2 : 1;
+	keep_from = hist_n - KEEP_RECENT;
+	if (keep_from < body0)
+		keep_from = body0;
+
+	discard[0] = '\0';
+	for (i = body0; i < keep_from; i++) {
+		const char *tag = (hist[i].role == 'u') ? "用户: " :
+				  (hist[i].role == 'a') ? "助手: " : "";
+		size_t tl = strlen(tag);
+		size_t hl = strlen(hist[i].text);
+
+		if (dn + tl + hl + 2 >= sizeof(discard))
+			break;
+		if (tl) {
+			memcpy(discard + dn, tag, tl);
+			dn += tl;
 		}
-		memcpy(hist, keep, sizeof(hist[0]) * (size_t)kn);
-		hist_n = kn;
+		memcpy(discard + dn, hist[i].text, hl);
+		dn += hl;
+		discard[dn++] = '\n';
+		discard[dn] = '\0';
 	}
+
+	summary[0] = '\0';
+	if (dn > 0 && handle && p_run) {
+		static char prompt[PROMPT_MAX];
+		RKLLMInput input;
+		RKLLMInferParam infer;
+		int ret;
+
+		snprintf(prompt, sizeof(prompt),
+			 "请用简洁中文总结下列对话：保留要点、结论与未决问题，"
+			 "不超过200字。不要输出思维过程。\n\n%s\n/no_think",
+			 discard);
+		summary_acc_n = 0;
+		summary_acc[0] = '\0';
+		summarizing = 1;
+		memset(&input, 0, sizeof(input));
+		input.role = "user";
+		input.enable_thinking = false;
+		input.input_type = RKLLM_INPUT_PROMPT;
+		input.prompt_input = prompt;
+		memset(&infer, 0, sizeof(infer));
+		infer.mode = RKLLM_INFER_GENERATE;
+		infer.keep_history = 0;
+		infer.max_new_tokens = SUMMARY_MAX_NEW;
+		npu_dvfs_boost();
+		ret = p_run(handle, &input, &infer, NULL);
+		npu_dvfs_restore();
+		summarizing = 0;
+		if (ret == 0 && summary_acc_n > 0) {
+			strncpy(summary, summary_acc, sizeof(summary) - 1);
+			summary[sizeof(summary) - 1] = '\0';
+		} else {
+			fprintf(stderr,
+				"rkllm_session: summary run failed (%d), hard-trim\n",
+				ret);
+		}
+	}
+
+	/* 保留旧摘要作底，再被新摘要覆盖 */
+	if (body0 == 2)
+		keep[kn++] = hist[1];
+	for (i = keep_from; i < hist_n; i++)
+		keep[kn++] = hist[i];
+	memcpy(hist, keep, sizeof(hist[0]) * (size_t)kn);
+	hist_n = kn;
+	/* 人设仍是 hist[0]，与 SYSTEM_PROMPT 一致（未改写） */
+	if (summary[0])
+		hist_set_memory(summary);
 
 	destroy_handle();
 	if (create_handle(model_path_saved) != 0) {
@@ -779,11 +1004,32 @@ int session_compress(void)
 		return -1;
 	}
 	loaded = 1;
-	/* Was missing: recreate wiped KV; must prefill kept turns. */
 	prefill_retained_hist();
 	refresh_ctx();
 	compressing = 0;
-	tokq_push(TOKQ_STATUS, "[压缩完成]");
+	tokq_push(TOKQ_STATUS, summary[0] ? "[压缩完成·已更新摘要]" : "[压缩完成]");
+	fprintf(stderr, "rkllm_session: compress done hist_n=%d has_mem=%d\n",
+		hist_n, (hist_n >= 2 && hist[1].role == 'm'));
+	return 0;
+}
+
+int session_compress(void)
+{
+	if (!loaded || !model_path_saved[0] || !worker_live)
+		return -1;
+
+	pthread_mutex_lock(&wlock);
+	if (compressing || have_compress) {
+		pthread_mutex_unlock(&wlock);
+		return -1;
+	}
+	/* 生成中：先 abort，worker 空闲后再压 */
+	if (handle && p_is_running && p_is_running(handle) && p_abort)
+		p_abort(handle);
+	have_compress = 1;
+	pthread_cond_signal(&wcond);
+	pthread_mutex_unlock(&wlock);
+	tokq_push(TOKQ_STATUS, "[压缩已排队]");
 	return 0;
 }
 

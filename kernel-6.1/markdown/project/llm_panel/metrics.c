@@ -27,6 +27,12 @@ static uint64_t prev_rx, prev_tx;
 static struct timespec prev_net_ts;
 static int have_net_prev;
 
+/* 全部性能项统一 1s 采样；中间调用返回缓存 */
+#define METRICS_PERIOD_SEC 1
+static struct llm_metrics cached_metrics;
+static int have_metrics_cache;
+static struct timespec metrics_ts;
+
 static int read_u64_file(const char *path, uint64_t *out)
 {
 	FILE *f = fopen(path, "r");
@@ -173,6 +179,19 @@ static int sample_mem(struct llm_metrics *m)
 	m->mem_available_kb = avail;
 	m->valid |= METRICS_HAVE_MEM;
 	return 0;
+}
+
+static int metrics_due(void)
+{
+	struct timespec now;
+	double dt;
+
+	if (!have_metrics_cache)
+		return 1;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	dt = (now.tv_sec - metrics_ts.tv_sec) +
+	     (now.tv_nsec - metrics_ts.tv_nsec) / 1e9;
+	return dt >= (double)METRICS_PERIOD_SEC;
 }
 
 static int sample_cpu(struct llm_metrics *m)
@@ -343,6 +362,11 @@ static int sample_net(struct llm_metrics *m)
 
 int metrics_sample(struct llm_metrics *out)
 {
+	if (have_metrics_cache && !metrics_due()) {
+		*out = cached_metrics;
+		return 0;
+	}
+
 	memset(out, 0, sizeof(*out));
 	out->npu_temp_c = INT_MIN;
 	sample_mem(out);
@@ -351,6 +375,10 @@ int metrics_sample(struct llm_metrics *out)
 	sample_npu_temp(out);
 	sample_gpu(out);
 	sample_net(out);
+
+	cached_metrics = *out;
+	have_metrics_cache = 1;
+	clock_gettime(CLOCK_MONOTONIC, &metrics_ts);
 	return 0;
 }
 

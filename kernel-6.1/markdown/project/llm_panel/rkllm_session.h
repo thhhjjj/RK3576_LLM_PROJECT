@@ -39,8 +39,14 @@ int session_ask(const char *user_text);
 /* Abort current generation if any. */
 void session_abort(void);
 
-/* Manual/auto compress: keep system, drop oldest turns, destroy+rebuild.
- * Returns 0 on success. */
+/* 1 = 生成本轮尚未 FINISH（abort 后仍为 1，直到回调结束）. */
+int session_gen_busy(void);
+
+/*
+ * PHASE7-C：异步压缩（投递 worker，不堵 LVGL）。
+ * 人设 hist[0] 不动；旧轮 → 摘要条 role'm'；保留近轮；destroy+prefill。
+ * @return 0 已排队；-1 忙/未加载。
+ */
 int session_compress(void);
 
 void session_get_stats(struct session_stats *out);
