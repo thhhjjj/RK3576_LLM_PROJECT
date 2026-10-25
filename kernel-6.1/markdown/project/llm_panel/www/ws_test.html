@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>llm_panel WS 试连</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 1.5rem auto; padding: 0 1rem; }
+    #log { white-space: pre-wrap; border: 1px solid #ccc; min-height: 12rem; padding: .75rem; }
+    input, button { font-size: 1rem; margin: .25rem 0; }
+    #url { width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>PHASE3 WebSocket</h1>
+  <p>用板子 <b>真实</b> wlan IP（<code>adb shell 'ip -4 addr show wlan0'</code>），不要用 192.168.1.100 占位。<br/>
+  例：曾用过 <code>ws://192.168.31.89:8765/</code>。Mac 与板须同一局域网。</p>
+  <label>URL <input id="url" value="ws://192.168.31.89:8765/" /></label><br/>
+  <button id="conn">连接</button>
+  <button id="ask">试问（预置）</button>
+  <button id="disc">断开</button>
+  <div id="log"></div>
+  <script>
+    const logEl = document.getElementById('log');
+    let ws = null;
+    function log(s) { logEl.textContent += s; logEl.scrollTop = logEl.scrollHeight; }
+    document.getElementById('conn').onclick = () => {
+      if (ws) ws.close();
+      const u = document.getElementById('url').value.trim();
+      /* Subprotocol "llm" matches board ws_hub; also works if omitted after 0.1.2. */
+      ws = new WebSocket(u, ['llm']);
+      ws.onopen = () => log('[open]\n');
+      ws.onclose = (ev) => log('[close] code=' + ev.code + '\n');
+      ws.onerror = () => log('[error]（若反复失败：确认 URL 已填 ws://板IP:8765/，且不要用地址栏打开 ws://）\n');
+      ws.onmessage = (ev) => {
+        try {
+          const j = JSON.parse(ev.data);
+          if (j.type === 'token') log(j.text || '');
+          else if (j.type === 'finish') log('\n[finish]\n');
+          else if (j.type === 'error') log('\n[error] ' + (j.text || '') + '\n');
+          else if (j.type === 'status') log('[status] ' + (j.text || '') + '\n');
+          else log(ev.data + '\n');
+        } catch (e) { log(ev.data + '\n'); }
+      };
+    };
+    document.getElementById('disc').onclick = () => { if (ws) ws.close(); };
+    document.getElementById('ask').onclick = () => {
+      if (!ws || ws.readyState !== 1) { log('[not connected]\n'); return; }
+      const q = '用一句话介绍 RK3576 上的 RKNPU';
+      ws.send(JSON.stringify({ type: 'ask', text: q }));
+      log('\n> ' + q + '\n');
+    };
+  </script>
+</body>
+</html>

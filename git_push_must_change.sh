@@ -16,6 +16,7 @@
 #   - kernel-6.1/markdown/project/llm_ctrl、llm_panel（跳过 *.md）
 #   - llm_ctrl_autoload/llm_ctrl.ko → project/llm_ctrl/
 #   - rkllm_autoload/*.so、models/*.{rkllm,rknn} → SDK/rkllm_autoload/（prepare.sh 装进 rootfs）
+#   - mali_autoload/*.so → SDK/mali_autoload/（PHASE6 GPU 用户态）
 #
 # 环境变量：REPO_URL BRANCH BACKUP CACHE_DIR
 
@@ -86,6 +87,7 @@ should_skip() {
 		# staging helper dirs: handled specially below
 		llm_ctrl_autoload|llm_ctrl_autoload/*) return 0 ;;
 		rkllm_autoload|rkllm_autoload/*) return 0 ;;
+		mali_autoload|mali_autoload/*) return 0 ;;
 	esac
 
 	# Allow PHASE1 out-of-tree apps (C/Makefile/CMake), skip other markdown docs
@@ -220,6 +222,28 @@ if [ -d "$SRC/rkllm_autoload" ]; then
 	done
 fi
 
+# PHASE6: Mali / EGL userspace staging
+if [ -d "$SRC/mali_autoload" ]; then
+	info "同步 mali_autoload → SDK/mali_autoload/"
+	mkdir -p "$SDK_ROOT/mali_autoload"
+	shopt -s nullglob
+	for f in "$SRC/mali_autoload"/libmali*.so* \
+		"$SRC/mali_autoload"/libEGL.so* \
+		"$SRC/mali_autoload"/libGLESv2.so* \
+		"$SRC/mali_autoload"/libGLESv1_CM.so* \
+		"$SRC/mali_autoload"/libgbm.so* \
+		"$SRC/mali_autoload"/libwayland*.so* \
+		"$SRC/mali_autoload"/libffi.so*; do
+		[ -e "$f" ] || continue
+		cp -av "$f" "$SDK_ROOT/mali_autoload/"
+		APPLIED=$((APPLIED + 1))
+	done
+	shopt -u nullglob
+	if [ -f "$SRC/mali_autoload/README.md" ]; then
+		cp -v "$SRC/mali_autoload/README.md" "$SDK_ROOT/mali_autoload/" || true
+	fi
+fi
+
 info ""
 info "完成: 应用 ${APPLIED} 个文件，跳过 ${SKIPPED} 个。"
 info "备份目录: $SDK_ROOT/$BACKUP/"
@@ -231,6 +255,7 @@ info "  grep 'select BR2_PACKAGE_LVGL_USE' buildroot/package/llm_panel/Config.in
 info "  ls kernel-6.1/markdown/project/llm_panel/{main.c,evdev.c,rkllm_session.c}"
 info "  ls buildroot/dl/lvgl/lvgl-8.3.0.tar.gz buildroot/dl/lv_drivers/lv_drivers-8.3.0.tar.gz"
 info "  ls rkllm_autoload/librkllmrt.so rkllm_autoload/models/QWEN3.5_2B.rkllm rkllm_autoload/models/vision.rknn 2>/dev/null || echo '(模型见 rkllm_autoload/README.md)'"
+info "  ls mali_autoload/libmali* mali_autoload/libEGL* 2>/dev/null || echo '(PHASE6 GPU：见 mali_autoload/README.md)'"
 info "  grep RK_BUILDROOT_BASE_CFG device/rockchip/.chips/rk3576/rockchip_rk3576_kickpi_k7c_buildroot_defconfig"
 info ""
 info "下一步: ./build.sh lunch  # 选 kickpi_k7c_buildroot(5)"

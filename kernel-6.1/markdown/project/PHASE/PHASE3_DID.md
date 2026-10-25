@@ -1,69 +1,74 @@
 # PHASE3 已做记录
 
-> 对照 [PHASE3.md](./PHASE3.md)。只记已经落地的改动；未做步骤标「未做」。  
-> 第二阶段基线见 [PHASE2_DID.md](./PHASE2_DID.md)。**第二阶段不过线，不应把 WebSocket 当出口。**
+> 对照 [PHASE3.md](./PHASE3.md)。WiFi/WS 教程：[wifi_ws.md](./wifi_ws.md)。  
+> **主线下一刀**：[PHASE6.md](./PHASE6.md) GPU → [PHASE7.md](./PHASE7.md) 体验；**添头**才是 [PHASE4.md](./PHASE4.md) BLE / [PHASE5.md](./PHASE5.md) frpc。
 
 ## 进度总览
 
-| PHASE3 步骤块 | 状态 |
+| 步骤块 | 状态 |
 |---|---|
-| 1. 扇出总线（UI + WS） | **未做** |
-| 2. WebSocket 监听 + 浏览器流式 | **未做** |
-| 3. WS 上行提问 → 本地推理 | **未做** |
-| 4. 云端 DeepSeek SSE + 模式切换 | **未做** |
-| 5. Key / 冷启动 / 安全收口 | **未做** |
-| 6. 明确不做项 | GATT / frpc / 拼音 — **保持不做** |
+| 1. 扇出总线 | **已过** |
+| 2. WebSocket | **已过**（板测流式） |
+| 3. WS → 本地推理 | **已过** |
+| 4. DeepSeek SSE + 模式切换 | **代码已过（0.2.1）**；**板测待勾**（需 Key + 编新 ELF） |
+| 5. Key / 安全收口 | **代码侧已做**：Key 仅内存、栈上 wipe、不打日志；冷启动/板测 grep 待勾 |
+| 6. 不做 GATT/frpc/拼音 | **保持** |
 
-**入口条件（PHASE2）**：本地 Qwen3.5-2B 文本可聊、可压缩、先 load 再 UI（见 PHASE2_DID）。
-
-日常差分仍以 **`Desktop/makediff`**（或云端 `RK3576_LLM_PROJECT`）为提交源。
+桌面旧 `llm_panel`（约 55KB / 05:16）仍是 **0.1.x**，**必须重编 0.2.1** 才能测云端。
 
 ---
 
-## 版本与路径（落地后填写）
+## 版本与路径
 
 | 项 | 值 |
 |---|---|
-| WebSocket 绑定 / 端口 | |
-| 帧格式（上行 / 下行） | |
-| 云端默认 | **DeepSeek**（OpenAI 兼容 SSE） |
-| 云端 API 基址 / 模型 | （落地后填，如 api.deepseek.com + deepseek-chat） |
-| API Key 存放 | 仅进程内存（目标；开发可用你已有 Key） |
-| 相关源码 | |
+| UI | **`vtest：0.2.1`**（SSE abort 加速 + 云端跳过压缩） |
+| WS | `0.0.0.0:8765` |
+| 云端 | `https://api.deepseek.com` + `deepseek-chat` |
+| Key | `DEEPSEEK_API_KEY` / `LLM_PANEL_API_KEY` → 内存；`cloud_sse_fini` / 用后 `memset` |
+| 源码 | `cloud_sse.c`、`ws_hub.c`、`main.c`（`panel_ask`） |
 
 ---
 
-## 分步记录
+## 完成线七条（对照 PHASE3.md）
 
-### 1. 扇出总线
-
-未做。
-
-### 2. WebSocket
-
-未做。
-
-### 3. WS → 本地推理
-
-未做。
-
-### 4. 云端 SSE
-
-未做。
-
-### 5. 收口
-
-未做。
+| # | 要求 | 判定 |
+|---|---|---|
+| 1 | 局域网 WS 流式 | **已过** |
+| 2 | 慢客户端 / 断连隔离 | **已过**（每连接队列；满丢 token） |
+| 3 | DeepSeek SSE + 错误态 | **代码过 / 板测待** |
+| 4 | Key 仅内存 | **代码过 / 板测 grep 待** |
+| 5 | 切换先 abort 再改路 | **代码过** |
+| 6 | 三路扇出骨架 UI+WS（BLE 空） | **已过**（BLE→PHASE4） |
+| 7 | 不开 GATT/frpc/解析远端 | **已过** |
 
 ---
 
-## 问题怎么解决的（按时间线）
+## 板测口令（0.2.1）
 
-（开工后追加。）
+```bash
+# VM
+bash makediff/git_push_must_change.sh makediff
+rm -f kernel-6.1/markdown/project/llm_panel/Makefile
+OUT=buildroot/output/rockchip_rk3576_kickpi_k7c_llm
+make -C buildroot O=$PWD/$OUT llm_panel-dirclean llm_panel-rebuild
+strings $OUT/target/usr/bin/llm_panel | grep '0\.2\.1'
+cp -v $OUT/target/usr/bin/llm_panel ~/Desktop/
+
+# Mac（Key 勿提交 git；用完可 unset）
+adb push ~/Desktop/llm_panel /usr/bin/llm_panel
+adb shell 'chmod 755 /usr/bin/llm_panel; killall llm_panel; sleep 1
+DEEPSEEK_API_KEY=你的key /usr/bin/llm_panel >/tmp/llm_panel.log 2>&1 &'
+
+adb shell "strings /usr/bin/llm_panel | grep 0.2.1"
+adb shell 'grep -iE "sk-|Bearer|DEEPSEEK" /tmp/llm_panel.log || echo OK_no_key_in_log'
+```
+
+屏：拨「云端」→ 试问流式；拨回「本地」应停云端；断网再问应有错误/`finish` 而非死转圈。
 
 ---
 
-## 结论（截至本记录）
+## 结论
 
-- **未开工**。规划见 [PHASE3.md](./PHASE3.md)。
-- **下一步**：PHASE2 收口勾选 → 扇出总线 → 再听端口。
+- **代码**：PHASE3 步骤 1–5 主体已落地。  
+- **你这边**：编并推 **0.2.1** → 云端板测 → 勾上表「板测待」→ 再开 [PHASE4.md](./PHASE4.md) GATT。

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 #
-# Host/VM quick test without LVGL:
-#   make metrics_test
+# Host/VM quick test without LVGL (do NOT name this "Makefile" —
+# Buildroot cmake in-tree rsync would clobber the link step with metrics_test).
 #
-# Full UI is built by Buildroot package llm_panel during ./build.sh rootfs.
+#   make -f Makefile.host metrics_test
 
 ARCH          ?= arm64
 CROSS_COMPILE ?= aarch64-linux-gnu-

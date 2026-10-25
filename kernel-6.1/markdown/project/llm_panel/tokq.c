@@ -5,19 +5,12 @@
 #include <string.h>
 
 #define TOKQ_CAP 128
-//事件队列
+
 static struct tokq_evt q[TOKQ_CAP];
-
-//事件队列索引
-//head 读位置：pop 从这里取
-//tail 写位置：push 往这里放
-//count 当前队列里有多少个事件
 static unsigned head, tail, count;
-
-//定义互斥锁，初始化未上锁
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static tokq_fanout_fn fanout_fn;
 
-//初始化token事件队列
 int tokq_init(void)
 {
 	pthread_mutex_lock(&lock);
@@ -29,26 +22,39 @@ int tokq_init(void)
 void tokq_fini(void)
 {
 	tokq_init();
+	fanout_fn = NULL;
+}
+
+void tokq_set_fanout(tokq_fanout_fn fn)
+{
+	fanout_fn = fn;
 }
 
 int tokq_push(enum tokq_kind kind, const char *text)
 {
+	struct tokq_evt ev;
 	int rc = -1;
+
+	ev.kind = kind;
+	if (text) {
+		strncpy(ev.text, text, sizeof(ev.text) - 1);
+		ev.text[sizeof(ev.text) - 1] = '\0';
+	} else {
+		ev.text[0] = '\0';
+	}
 
 	pthread_mutex_lock(&lock);
 	if (count < TOKQ_CAP) {
-		q[tail].kind = kind;
-		if (text) {
-			strncpy(q[tail].text, text, sizeof(q[tail].text) - 1);
-			q[tail].text[sizeof(q[tail].text) - 1] = '\0';
-		} else {
-			q[tail].text[0] = '\0';
-		}
+		q[tail] = ev;
 		tail = (tail + 1) % TOKQ_CAP;
 		count++;
 		rc = 0;
 	}
 	pthread_mutex_unlock(&lock);
+
+	/* Fan-out even if UI queue was full — WS clients stay independent. */
+	if (fanout_fn)
+		fanout_fn(&ev);
 	return rc;
 }
 

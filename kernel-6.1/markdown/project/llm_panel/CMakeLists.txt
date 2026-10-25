@@ -19,6 +19,11 @@ add_executable(llm_panel
 	font.c
 	tokq.c
 	rkllm_session.c
+	ws_hub.c
+	cloud_sse.c
+	gpu_probe.c
+	gpu_disp.c
+	npu_dvfs.c
 )
 
 target_link_libraries(llm_panel
@@ -27,6 +32,8 @@ target_link_libraries(llm_panel
 	freetype
 	drm
 	evdev
+	websockets
+	curl
 	pthread
 	dl
 	m

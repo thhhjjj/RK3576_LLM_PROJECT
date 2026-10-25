@@ -14,7 +14,7 @@
 | 5. 内存低水位与异常路径 | **代码已做**（`MemAvailable` &lt; 200MB → 告警 + 压缩，滞回解除）。极端低水位板测、低水位同步压缩卡屏 → 移交 [project.md](../project.md) **第七阶段** |
 | 6. 视觉通路 / 1.7B 对照 / 2048 | **不做已过**（`vision.rknn` 可后装；不挡文本验收） |
 | 7. 再裁 rootfs / 关无用服务 | **未做**（PHASE2 后续，不挡完成线；见下「L」与 [PHASE2.md](./PHASE2.md)「后续工作」） |
-| 8. 收口 | **未做**（模型是否烤进镜像、文档收口、对照表） |
+| 8. 收口 | **已过（2026-10-24）**。5GB rootfs 含模型；冷启动 `model=yes`、`vtest：0.0.6`、无 adb 推 so/模型 |
 
 **入口条件（PHASE1）**：屏 / 触摸 / Seekwave / 裁剪 Buildroot / `llm_ctrl` / `llm_panel`（中文）已过。
 
@@ -105,7 +105,7 @@
 - 模型文件约 2.2G；板上路径 `QWEN3.5_2B.rkllm`（与桌面对齐）。  
 - 日志：`model_dtype: W4A16_G128`，`platform: RK3576`，`model=yes`。  
 - 「试问」预置句：用一句话介绍 RK3576 上的 RKNPU → 有中文短答。  
-- **未**把 2.2G 烤进日常迭代镜像（收口再定）；可用 adb 推或偶发打进 rootfs。
+- **收口决定（2026-10-24）**：烤进冷启动镜像。源文件 `Desktop/AI deal/QWEN3.5_2B.rkllm` → 硬链到 `makediff/rkllm_autoload/models/QWEN3.5_2B.rkllm`（不进 git）。`prepare.sh` 已会装到 `/usr/share/rkllm/`。
 
 ### 3. 进程结构 — **已过**
 
@@ -123,9 +123,48 @@
 
 ### 6. 可选压测 — **未做**
 
-### 7. 收口 — **未做**
+### 7. 收口 — **已过（2026-10-24）**
 
-是否烤 `QWEN3.5_2B.rkllm` 进镜像；冷启动清单；完成线七条核对。
+| 项 | 状态 |
+|---|---|
+| 烤 `QWEN3.5_2B.rkllm` 进镜像 | **已过**；~5GB rootfs 刷入 |
+| VM 编包 + 刷机 | **已过** |
+| 冷启动（无 adb 推 so/模型） | **已过**（见下） |
+| 完成线七条核对 | 见下表 |
+
+**冷启动验收（adb，2026-10-24，未 push 模型/so）**
+
+1. 自启 `llm_panel` — **过**（pid 在）。  
+2. `strings` 有 **`vtest` / `0.0.6`**；日志 `model=yes`、`rkllm-runtime 1.3.1` — **过**。  
+3. 点「试问」→ 中文短答 — **屏上请再点一次确认**。  
+4. 点「压缩」→ `[压缩完成]`（可假死，见 **K**）— **屏上请确认**。  
+5. 镜像内：`librkllmrt.so` 7.3M、`libgomp.so.1`、`QWEN3.5_2B.rkllm` **2.2G** — **过**。  
+加载后 `MemAvailable ≈ 2205 MB`（面板侧此前约 1705/3898）。
+
+**完成线七条（对照 [PHASE2.md](./PHASE2.md)）**
+
+| # | 要求 | 判定 |
+|---|---|---|
+| 1 | `librkllmrt` + 依赖在 rootfs，大版本对齐 1.3.1 | **已过**（烤模型后冷启动再确认一次） |
+| 2 | 先 load 再 LVGL | **已过** |
+| 3 | 本机屏试问流式 + 真实指标 | **已过** |
+| 4 | 多轮 + 自动/手动压缩销毁重建 | **基本过**（手动+prefill 过；70% 自动水位板记待补） |
+| 5 | 压缩后能续答；Mem 不单调崩；无 OOM 退 | **基本过**（续答过；Mem 回升表未记全） |
+| 6 | 推理中六项指标约 1s 刷新 | **已过**（压缩同步时例外，见 K → 第七阶段） |
+| 7 | 云端只 UI、不开端口/GATT/frpc | **已过** |
+
+**VM 烤模型编包（SDK 根）**
+
+```bash
+# SMB 同步后确认模型在 SDK 侧（路径按你机器二选一）
+ls -lh rkllm_autoload/models/QWEN3.5_2B.rkllm \
+       makediff/rkllm_autoload/models/QWEN3.5_2B.rkllm
+
+bash makediff/git_push_must_change.sh makediff
+./build.sh rootfs
+# prepare 日志应有：installed QWEN3.5_2B.rkllm
+# 镜像体积会再涨 ~2.2G；刷后走冷启动清单，勿 adb 推模型
+```
 
 ### 8. 再裁 rootfs / 关无用服务 — **未做**（后续）
 
@@ -205,15 +244,16 @@ Buildroot output 无 libgomp；`librkllmrt` 依赖它。
 
 ---
 
-## 板上验收口令（文本试跑）
+## 板上验收口令（文本试跑 / 冷启动）
 
 ```bash
-adb shell "strings /usr/bin/llm_panel | grep -E '0\.0\.5|no_think|低水位'"
+adb shell "strings /usr/bin/llm_panel | grep -E '0\.0\.6|no_think|低水位'"
 adb shell 'ls -lh /usr/lib/librkllmrt.so /usr/lib/libgomp.so.1 /usr/share/rkllm/QWEN3.5_2B.rkllm'
 adb shell 'grep -E "model=|loaded|skip leading|cut trailing" /tmp/llm_panel.log | tail'
 ```
 
-屏上：右下角 **`vtest：0.0.5`**；「模型: 已加载」；试问 → 中文短答，无大段 Thinking Process。点「压缩」应出现 `[压缩完成]` 类状态。
+屏上：右下角 **`vtest：0.0.6`**；「模型: 已加载」；试问 → 中文短答，无大段 Thinking Process。点「压缩」应出现 `[压缩完成]` 类状态。  
+**收口冷启动**：以上路径须来自镜像，不得依赖 `adb push`。
 
 ---
 
@@ -222,5 +262,5 @@ adb shell 'grep -E "model=|loaded|skip leading|cut trailing" /tmp/llm_panel.log 
 - **已过（继承 PHASE1）**：MIPI、FTS、Seekwave、裁剪 Buildroot、`llm_ctrl`、`llm_panel` 显示+触摸+中文。  
 - **本阶段已过**：RKLLM 1.3.1 + libgomp；先 load 再 UI；Qwen3.5-2B W4A16_G128 文本试问；thinking 抑制；内存低水位压缩（代码）；压缩后 prefill（`0.0.6`）；版本标签快验。  
 - **已知体验问题**：压缩同步跑在 LVGL 线程 → 整屏卡死（见 **K**）；低水位同路径。异步化 + 极端低水位实压 → **第七阶段**（PHASE2 代码路径已在）。  
-- **下一步**：多轮/手动压缩后记 `MemAvailable`；收口是否烤模型；其后做 **再裁 rootfs / 关无用服务（L，步骤 27–30）**；卡屏/低水位板测见第七阶段。  
+- **下一步**：屏上确认试问 + 压缩；可选再裁 rootfs（L）；卡屏/低水位见第七阶段；再开 PHASE3。  
 - **不做**：WebSocket、GATT、云端 SSE、frpc、拼音输入法（本阶段仍不开；裁服务时勿误删后续要用的包，可先只关自启）。

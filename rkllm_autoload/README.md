@@ -72,3 +72,9 @@ ls -lh /usr/lib/librkllmrt.so \
 ```
 
 `.rkllm` / `.rknn` 默认不进 git（体积大）。`librkllmrt.so` 可提交。
+
+## 收口烤进镜像（冷启动）
+
+本机已把语言侧链到 `models/QWEN3.5_2B.rkllm`（源：`Desktop/AI deal/`，硬链，不占双倍盘）。  
+SMB 同步到 VM 后编 rootfs：`prepare.sh` 会装到板上 `/usr/share/rkllm/QWEN3.5_2B.rkllm`。  
+冷启动验收见 `PHASE/PHASE2_DID.md` 收口清单——刷机后勿再 `adb push` 模型。

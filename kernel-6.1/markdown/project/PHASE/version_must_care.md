@@ -64,11 +64,33 @@ adb shell 'ls -l /usr/bin/llm_panel; md5sum /usr/bin/llm_panel'
 
 1. **小改 UI**：编出 `target/usr/bin/llm_panel` 后 `adb push` 到板，少刷整包 rootfs。  
 2. **版本号每次 bump**（`0.0.1` → `0.0.2`…），屏上 / `strings` 对不上立刻停。  
-3. 当前屏上标记：右下角白色 **`vtest：0.0.6`**（thinking 过滤 + 低水位 + 压缩 prefill）。  
+3. 当前屏上标记：右下角白色 **`vtest：0.1.0`**（PHASE3：WS `:8765` 扇出；见 PHASE3_DID）。  
 4. Mac 引号：整条管道包在双引号里，避免本机 `grep` 把 `model` 当文件名：
    ```bash
    adb shell "strings /usr/bin/llm_panel | grep 'loading model'"
    ```
+
+## 收口：烤模型进 rootfs（冷启动）
+
+模型 **不进 git**（`rkllm_autoload/.gitignore`）。Mac 放好后靠 SMB 进 VM，再被 `overlays/30-llm_ctrl/prepare.sh` 拷进镜像。
+
+```text
+Desktop/AI deal/QWEN3.5_2B.rkllm
+  →（硬链）makediff/rkllm_autoload/models/QWEN3.5_2B.rkllm
+  → SMB → VM 同路径
+  → prepare.sh → /usr/share/rkllm/QWEN3.5_2B.rkllm
+```
+
+```bash
+# VM：确认模型在编包能找到的目录（SDK 根或 makediff 兄弟）
+ls -lh rkllm_autoload/models/QWEN3.5_2B.rkllm \
+       makediff/rkllm_autoload/models/QWEN3.5_2B.rkllm
+
+./build.sh rootfs
+# 日志应出现：>>> rkllm: installed QWEN3.5_2B.rkllm
+```
+
+刷机后 **禁止** `adb push` so/模型/panel；按 [PHASE2_DID.md](./PHASE2_DID.md) 冷启动清单勾完成线。
 
 ## 快速自检口诀
 

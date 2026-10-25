@@ -86,4 +86,38 @@ else
 	echo ">>> rkllm: no rkllm_autoload dir (optional for PHASE2)" >&2
 fi
 
+# PHASE6: optional Mali / EGL / GBM / GLESv2 userspace (until dropped in)
+MALI_DIR=""
+for d in \
+	"$SDK_DIR/mali_autoload" \
+	"$SDK_DIR/makediff/mali_autoload" \
+	"$SDK_DIR/../makediff/mali_autoload"
+do
+	if [ -d "$d" ]; then
+		MALI_DIR="$d"
+		break
+	fi
+done
+
+if [ -n "$MALI_DIR" ]; then
+	mkdir -p "$TARGET_DIR/usr/lib"
+	n=0
+	# wayland-gbm mali NEEDs libwayland-client (+ often libffi)
+	for pat in libmali*.so* libEGL.so* libGLESv2.so* libGLESv1_CM.so* \
+		libgbm.so* libwayland-client.so* libwayland-server.so* \
+		libwayland-egl.so* libwayland-cursor.so* libffi.so*; do
+		for f in "$MALI_DIR"/$pat; do
+			[ -e "$f" ] || continue
+			cp -a "$f" "$TARGET_DIR/usr/lib/"
+			echo ">>> mali: installed $(basename "$f") -> /usr/lib/"
+			n=$((n + 1))
+		done
+	done
+	if [ "$n" -eq 0 ]; then
+		echo ">>> mali: no .so in $MALI_DIR (PHASE6: drop blobs per mali_autoload/README.md)" >&2
+	fi
+else
+	echo ">>> mali: no mali_autoload dir (optional for PHASE6)" >&2
+fi
+
 exit 0

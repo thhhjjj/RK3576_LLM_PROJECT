@@ -1,0 +1,5 @@
+# Proprietary GPU blobs stay local.
+*.so
+*.so.*
+!README.md
+!.gitignore

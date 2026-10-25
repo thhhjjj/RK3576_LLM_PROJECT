@@ -5,6 +5,7 @@
  */
 
 #include "rkllm_session.h"
+#include "npu_dvfs.h"
 
 #include "tokq.h"
 #include "vendor/rkllm.h"
@@ -403,8 +404,10 @@ static int create_handle(const char *model_path)
 	param = p_createDefaultParam();
 	//设置权重模型路径
 	param.model_path = model_path;
-	//最大上下文窗口
+	/* 最大上下文：须 ≤ .rkllm 导出时的 max_context_len */
 	param.max_context_len = LLM_PANEL_MAX_CONTEXT;
+	fprintf(stderr, "rkllm_session: max_context_len=%d\n",
+		LLM_PANEL_MAX_CONTEXT);
 	//单轮生成最大tokens数
 	param.max_new_tokens = 512;
 	//top_k，按排名采样，每次只固定填入最大概率的前k个token，且再从k个抽一个
@@ -534,7 +537,10 @@ static void *worker_main(void *arg)
 			infer.mode = RKLLM_INFER_GENERATE;
 			infer.keep_history = 1;
 
+			/* PHASE7-A：升频 → run → 降回（勿在回调里改频） */
+			npu_dvfs_boost();
 			ret = p_run(handle, &input, &infer, NULL);
+			npu_dvfs_restore();
 		}
 		if (ret != 0)
 			tokq_push(TOKQ_ERROR, "rkllm_run 失败");
@@ -561,6 +567,8 @@ int session_init(void)
 
 	//初始化token事件队列
 	tokq_init();
+
+	npu_dvfs_init(); /* PHASE7-A：探测 NPU devfreq */
 
 	//初始化worker线程状态参数
 	worker_stop = 0;//worker停止标志
@@ -727,7 +735,9 @@ static int prefill_retained_hist(void)
 	infer.max_new_tokens = 1; /* just to land prompt in KV; callback aborts */
 
 	prefilling = 1;
+	npu_dvfs_boost();
 	ret = p_run(handle, &input, &infer, NULL);
+	npu_dvfs_restore();
 	prefilling = 0;
 	if (ret != 0)
 		fprintf(stderr, "rkllm_session: prefill hist failed (%d)\n", ret);

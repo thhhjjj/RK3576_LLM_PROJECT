@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * PHASE1/2 LVGL panel: metrics + dialog + compress + ask + local/cloud.
- * PHASE2: compress/ask call session hooks; cloud switch still UI-only.
+ * PHASE1–3 LVGL panel: metrics + dialog + compress + ask + local/cloud.
+ * PHASE3: mode hook wired; cloud SSE next. WS status label.
  */
 
 #include "ui.h"
@@ -17,6 +17,7 @@ static lv_obj_t *lbl_cpu;
 static lv_obj_t *lbl_npu_load;
 static lv_obj_t *lbl_npu_temp;
 static lv_obj_t *lbl_gpu;
+static lv_obj_t *lbl_fps;
 static lv_obj_t *lbl_net;
 static lv_obj_t *lbl_ctx;
 static lv_obj_t *lbl_tps;
@@ -27,10 +28,12 @@ static lv_obj_t *btn_compress;
 static lv_obj_t *btn_ask;
 static lv_obj_t *sw_mode;
 static lv_obj_t *lbl_mode;
+static lv_obj_t *lbl_ws;
 static int mode_cloud; /* 0 local, 1 cloud */
 
 static ui_action_fn act_compress;
 static ui_action_fn act_ask;
+static ui_mode_fn act_mode;
 
 static void set_label(lv_obj_t *lbl, const char *txt)
 {
@@ -65,7 +68,9 @@ static void on_mode(lv_event_t *e)
 	mode_cloud = lv_obj_has_state(sw, LV_STATE_CHECKED) ? 1 : 0;
 	if (lbl_mode)
 		lv_label_set_text(lbl_mode,
-				  mode_cloud ? "云端(未接)" : "本地");
+				  mode_cloud ? "云端" : "本地");
+	if (act_mode)
+		act_mode(mode_cloud);
 }
 
 static lv_obj_t *add_metric_row(lv_obj_t *parent, const char *title, int y)
@@ -86,6 +91,16 @@ void ui_set_actions(ui_action_fn on_compress_fn, ui_action_fn on_ask_fn)
 {
 	act_compress = on_compress_fn;
 	act_ask = on_ask_fn;
+}
+
+void ui_set_mode_hook(ui_mode_fn on_mode_fn)
+{
+	act_mode = on_mode_fn;
+}
+
+int ui_mode_is_cloud(void)
+{
+	return mode_cloud;
 }
 
 void ui_create(void)
@@ -120,8 +135,7 @@ void ui_create(void)
 	lv_obj_set_pos(ta_dialog, 16, 260);
 	lv_obj_set_style_text_font(ta_dialog, font_body(), 0);
 	lv_textarea_set_text(ta_dialog,
-			     "（对话区）\nPHASE2：先加载模型再开 UI。"
-			     "点「试问」发预置问题（无拼音输入）。\n");
+			     "（对话区）\nPHASE3：本地 / 云端 DeepSeek；WS :8765。\n");
 	lv_textarea_set_cursor_click_pos(ta_dialog, false);
 	lv_obj_clear_flag(ta_dialog, LV_OBJ_FLAG_CLICK_FOCUSABLE);
 
@@ -156,6 +170,17 @@ void ui_create(void)
 	style_text(lbl_mode, font_body(), 0xe8e8e8);
 	lv_obj_set_pos(lbl_mode, 480, 996);
 
+	/* PHASE7-E: fps top-right; WS just under it */
+	lbl_fps = lv_label_create(scr);
+	lv_label_set_text(lbl_fps, "— fps");
+	style_text(lbl_fps, font_body(), 0xffffff);
+	lv_obj_align(lbl_fps, LV_ALIGN_TOP_RIGHT, -16, 12);
+
+	lbl_ws = lv_label_create(scr);
+	lv_label_set_text(lbl_ws, "WS —");
+	style_text(lbl_ws, font_small(), 0xa0a8b0);
+	lv_obj_align(lbl_ws, LV_ALIGN_TOP_RIGHT, -16, 44);
+
 	lbl_overtemp = lv_label_create(scr);
 	lv_label_set_text(lbl_overtemp, "");
 	style_text(lbl_overtemp, font_body(), 0xff5555);
@@ -165,7 +190,7 @@ void ui_create(void)
 	/* Build/flash marker — bottom-right, white. */
 	{
 		lv_obj_t *ver = lv_label_create(scr);
-		lv_label_set_text(ver, "vtest：0.0.6");
+		lv_label_set_text(ver, "vtest：0.6.0");
 		style_text(ver, font_small(), 0xffffff);
 		lv_obj_align(ver, LV_ALIGN_BOTTOM_RIGHT, -16, -16);
 	}
@@ -258,4 +283,23 @@ void ui_set_model_status(const char *text)
 
 	snprintf(buf, sizeof(buf), "模型: %s", text ? text : "—");
 	set_label(lbl_model, buf);
+}
+
+void ui_set_ws_status(const char *text)
+{
+	set_label(lbl_ws, text ? text : "WS —");
+}
+
+void ui_set_fps(float fps)
+{
+	char buf[32];
+
+	if (fps < 0.f) {
+		set_label(lbl_fps, "— fps");
+		return;
+	}
+	snprintf(buf, sizeof(buf), "%.0f fps", fps);
+	set_label(lbl_fps, buf);
+	if (lbl_fps)
+		lv_obj_align(lbl_fps, LV_ALIGN_TOP_RIGHT, -16, 12);
 }
