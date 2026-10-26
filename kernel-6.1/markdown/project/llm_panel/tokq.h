@@ -8,11 +8,12 @@
  * UI drains via tokq_pop; optional fanout_fn gets a copy (e.g. WS queues).
  */
 
+/* 事件类型：本地 RKLLM / 云端 SSE 共用；UI pop + WS fanout 同吃 */
 enum tokq_kind {
-	TOKQ_TOKEN = 0, /* streaming token chunk */
-	TOKQ_FINISH,    /* end of turn */
-	TOKQ_ERROR,     /* error; ends turn */
-	TOKQ_STATUS,    /* status line in text */
+	TOKQ_TOKEN = 0, /* 生成token文本，出字中 */
+	TOKQ_FINISH,    /* 本轮生成出字完成，正常结束 */
+	TOKQ_ERROR,     /* 生成出错；本轮直接结束 */
+	TOKQ_STATUS,    /* 状态文案（如压缩中、无 Key），不一定与轮次有关 */
 };
 
 struct tokq_evt {

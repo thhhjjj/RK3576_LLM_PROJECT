@@ -276,13 +276,19 @@ int main(int argc, char **argv)
 	signal(SIGINT, on_sig);//ctrl c退出
 	signal(SIGTERM, on_sig);//kill -pid退出
 
-	/* 会话 / 指标 / token 队列 / 云端 SSE / WebSocket 扇出 */
+	//初始化会话模块
 	session_init();
+	//初始化指标模块
 	metrics_init();
+	//初始化token事件队列
 	tokq_init();
+	//设置token事件队列的扇出函数，用于将token事件发送到WebSocket
 	tokq_set_fanout(ws_hub_fanout);
+	//初始化云端 SSE，拉起 worker 线程
 	cloud_sse_init();
+	//从环境变量加载云端 Key
 	cloud_sse_load_key_from_env(); /* 仅进程内，不落盘 */
+	//设置问答处理函数
 	ws_hub_set_ask_handler(panel_ask);
 
 	/* PHASE2：先加载模型，再开 LVGL，避免首屏卡在读权重 */
