@@ -307,6 +307,10 @@ static int run_one(const char *user_text)
 	return 0;
 }
 
+/*
+ * 云端 worker 线程：等 ask 排队 → 取 prompt → run_one（一整轮发+收）→ 再等。
+ * 外圈是「多轮问答」；单轮 SSE 收包循环在 curl perform 内部，不在这里。
+ */
 static void *worker(void *arg)
 {
 	(void)arg;
@@ -314,10 +318,13 @@ static void *worker(void *arg)
 	while (!g_stop) {
 		char prompt[PROMPT_MAX];
 
+		/* 无活就睡；ask 里 signal 后醒来（仍持 g_job_lock） */
 		while (!g_have_job && !g_stop)
 			pthread_cond_wait(&g_job_cond, &g_job_lock);
 		if (g_stop)
-			break;
+			break; /* fini：退线程 */
+
+		/* 取走排队提问，标记 busy；解锁后再跑，避免 perform 长时间占锁 */
 		strncpy(prompt, g_pending, sizeof(prompt) - 1);
 		prompt[sizeof(prompt) - 1] = '\0';
 		g_have_job = 0;
@@ -325,11 +332,11 @@ static void *worker(void *arg)
 		g_abort = 0;
 		pthread_mutex_unlock(&g_job_lock);
 
-		run_one(prompt);
+		run_one(prompt); /* 阻塞至本轮结束/中止；出字经 write_cb→tokq */
 		memset(prompt, 0, sizeof(prompt));
 
 		pthread_mutex_lock(&g_job_lock);
-		g_busy = 0;
+		g_busy = 0; /* 可接下一次 ask */
 	}
 	pthread_mutex_unlock(&g_job_lock);
 	return NULL;
@@ -415,6 +422,11 @@ void cloud_sse_load_key_from_env(void)
 		cloud_sse_set_key(e);
 }
 
+/*
+ * 排队一次云端提问（UI/WS 调用，很快返回）。
+ * 写入 g_pending、置 g_have_job，signal 叫醒 worker；真正发收在 worker→run_one。
+ * 0 已排队；-1 空串/无 Key/忙（busy 或已有未取 job）。
+ */
 int cloud_sse_ask(const char *user_text)
 {
 	if (!user_text || !user_text[0])
@@ -425,13 +437,13 @@ int cloud_sse_ask(const char *user_text)
 	pthread_mutex_lock(&g_job_lock);
 	if (g_busy || g_have_job) {
 		pthread_mutex_unlock(&g_job_lock);
-		return -1;
+		return -1; /* 单 worker：忙则拒，不堆第二问 */
 	}
 	strncpy(g_pending, user_text, sizeof(g_pending) - 1);
 	g_pending[sizeof(g_pending) - 1] = '\0';
-	g_have_job = 1;
+	g_have_job = 1; /* worker 内圈 while 醒来的条件 */
 	g_abort = 0;
-	pthread_cond_signal(&g_job_cond);
+	pthread_cond_signal(&g_job_cond); /* 叫醒 cond_wait 中的 worker */
 	pthread_mutex_unlock(&g_job_lock);
 	return 0;
 }
