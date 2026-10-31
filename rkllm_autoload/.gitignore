@@ -3,8 +3,11 @@
 *.rknn
 models/*
 !models/.gitkeep
+hf_src/
 !README.md
 !VERSION
 !librkllmrt.so
 !libgomp.so.1
 !fetch_qwen35_2b_vlm_rk3576.sh
+!export/
+export/**/*.rkllm
