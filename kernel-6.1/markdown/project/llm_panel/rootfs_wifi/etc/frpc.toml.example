@@ -1,0 +1,15 @@
+# 复制为 /etc/frpc.toml 并改 CHANGE_ME；chmod 600
+# 隧道：公网 TCP → 板子本机 WebSocket :8765
+
+serverAddr = "CHANGE_ME.example.com"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "CHANGE_ME"
+
+[[proxies]]
+name = "llm-ws"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8765
+remotePort = 18765

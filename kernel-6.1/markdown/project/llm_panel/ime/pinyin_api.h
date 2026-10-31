@@ -18,7 +18,8 @@
 #define LV_IME_PINYIN_CAND_TEXT_NUM 6
 #endif
 #ifndef LV_IME_PINYIN_USE_K9_MODE
-#define LV_IME_PINYIN_USE_K9_MODE 1
+/* 九键切布局在板子上易崩；默认只用 26 键拼音 */
+#define LV_IME_PINYIN_USE_K9_MODE 0
 #endif
 #ifndef LV_IME_PINYIN_K9_CAND_TEXT_NUM
 #define LV_IME_PINYIN_K9_CAND_TEXT_NUM 3

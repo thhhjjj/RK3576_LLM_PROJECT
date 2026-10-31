@@ -24,6 +24,4 @@
 
 ## 当前状态
 
-**未开工。** 等 PHASE3：`vtest：0.2.x` 云端板测 + Key 收口勾完后再写代码。
-
-其后可选公网隧道见 [PHASE5.md](./PHASE5.md)（frpc，默认关）。
+**取消 / 跳过。** 见 [PHASE4_DID.md](./PHASE4_DID.md)。主线不挡；公网改走 [PHASE5.md](./PHASE5.md) frpc。

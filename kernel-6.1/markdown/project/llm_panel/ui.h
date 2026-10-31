@@ -33,4 +33,9 @@ void ui_set_actions(ui_action_fn on_compress, ui_ask_fn on_ask);
 void ui_set_stop_action(ui_action_fn on_stop);
 void ui_set_mode_hook(ui_mode_fn on_mode);
 
+/* PHASE5：设置页 frpc 开关（0=关 1=开）；返回是否成功 */
+typedef int (*ui_frpc_fn)(int on);
+void ui_set_frpc_hook(ui_frpc_fn on_frpc);
+void ui_set_frpc_label(const char *text);
+
 #endif

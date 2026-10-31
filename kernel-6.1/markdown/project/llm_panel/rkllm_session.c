@@ -28,8 +28,8 @@
 #define PREFILL_CHUNK 2048
 
 static const char *SYSTEM_PROMPT =
-	"你是嵌入式 Linux 助手，擅长 C、设备树、RK 驱动；回答务必简洁。"
-	"只输出最终答案，不要输出任何推理过程、草稿或分点分析。";
+	"你是小千问（Qwen3.5-2B），说话热情、轻松、有趣。"
+	"用户是主人，回答请简明。";
 
 static const char *SMOKE_Q = "用一句话介绍 RK3576 上的 RKNPU。";
 
@@ -227,6 +227,15 @@ static const char *after_think_close(const char *s)
 	return best;
 }
 
+static int has_open_think_tag(const char *s)
+{
+	const char *open = strstr(s, "<think>");
+
+	if (!open)
+		return 0;
+	return after_think_close(open) == NULL;
+}
+
 static const char *first_cjk_utf8(const char *s)
 {
 	const unsigned char *p = (const unsigned char *)s;
@@ -240,36 +249,34 @@ static const char *first_cjk_utf8(const char *s)
 }
 
 /*
- * Think-first 时答案起点：</think> 后正文；或思维标记后空行；或中文。
- * 供 skip 中途 / FINISH 兜底共用（英文问句不能只等 CJK）。
+ * Think-first 答案起点：只认闭合标签之后。
+ * 禁止用思维块内部空行当答案（英文思考常有 \n\n，会把
+ * 后续 </think>+正文整段推上屏）。
  */
 static const char *answer_from_think_buf(const char *s)
 {
 	const char *after = after_think_close(s);
 	char *mark;
 	const char *p;
-	const char *cjk;
 
 	if (after && *after)
 		return after;
+	if (has_open_think_tag(s))
+		return NULL;
 
 	mark = find_thinking_mark((char *)s);
-	if (mark) {
-		p = strstr(mark, "\n\n");
-		if (p) {
-			p += 2;
-			while (*p == '\n' || *p == '\r' || *p == ' ' ||
-			       *p == '\t')
-				p++;
-			if (*p)
-				return p;
-		}
-	}
-
-	cjk = first_cjk_utf8(s);
-	if (cjk)
-		return cjk;
-	return NULL;
+	if (!mark)
+		return first_cjk_utf8(s);
+	/* XML 开标签未闭合已在上面处理；这里只处理纯文案 Thinking Process */
+	if (mark[0] == '<')
+		return NULL;
+	p = strstr(mark, "\n\n");
+	if (!p)
+		return NULL;
+	p += 2;
+	while (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t')
+		p++;
+	return *p ? p : NULL;
 }
 
 /* 把 ans 挪到 reply_acc 开头 */
@@ -459,12 +466,9 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 				keep--;
 
 			if (keep < THINK_ANSWER_MIN) {
-				/* 同缓冲已有 </think> 后正文则立刻出答案 */
+				/* 仅当已见到闭合标签后的正文才立刻上屏 */
 				ans = answer_from_think_buf(reply_acc);
-				if (ans && *ans &&
-				    (after_think_close(reply_acc) ||
-				     first_cjk_utf8(ans) == ans ||
-				     strstr(mark, "\n\n"))) {
+				if (ans && *ans && after_think_close(reply_acc)) {
 					skip_pre_think = 0;
 					reply_keep_from(ans);
 					pthread_mutex_unlock(&reply_lock);
@@ -473,7 +477,6 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 						"rkllm_session: skip leading think (inline answer)\n");
 					return 0;
 				}
-				/* 保留缓冲等闭合标签 / 空行 / 中文；先不上屏 */
 				skip_pre_think = 1;
 				pthread_mutex_unlock(&reply_lock);
 				fprintf(stderr,
@@ -658,26 +661,13 @@ static int create_handle(const char *model_path)
 		LLM_PANEL_MAX_CONTEXT);
 	//单轮生成最大tokens数
 	param.max_new_tokens = 512;
-	//top_k，按排名采样，每次只固定填入最大概率的前k个token，且再从k个抽一个
-	param.top_k = 1;
-	//top_p，按范围概率采样，每次取n个token，直到概率和大于0.9，再从n个中抽一个
-	param.top_p = 0.9f;
-
-	/*temperature，
-	 *emperature（温度）：在抽下一个 token 之前，把概率分布「拉平」或「拉尖」。
-	 *低（如 0.2）：更偏向高概率词 → 更稳、更死板
-	 *高（如 1.2）：分布更平均 → 更活、更易跑偏
-	 *1.0 附近：相对接近模型原始分布
-	*/
-	param.temperature = 0.8f;
-
-	/*repeat_penalty
-	 *重复惩罚：已经出现过的 token，再被选中时概率会被压低，减轻翻来覆去同一句/同一个词。
-	 *1.0：不惩罚
-	 *>1（你这里 1.1）：轻度抑制重复，常见默认档
-	 *太大：可能表达别扭、故意绕开常用词
-	*/
-	param.repeat_penalty = 1.1f;
+	/* top_k=1 等于几乎贪心，温度再高也闷；抬高以增加随机性 */
+	param.top_k = 40;
+	param.top_p = 0.95f;
+	/* 略高于 1：更活、更有趣味；再高易胡言 */
+	param.temperature = 1.15f;
+	/* 轻度防复读即可，太高会说话别扭 */
+	param.repeat_penalty = 1.05f;
 
 	/*skip_special_token
 	 *跳过特殊 token：生成结果里若出现模型内部用的特殊符号（如结束符、聊天模板标记、某些控制 token），不要把它们当作普通文字回给你。
@@ -710,13 +700,19 @@ static int create_handle(const char *model_path)
 		return -1;
 	}
 	/*
-	 * Keep a short system prompt. Note: set_chat_template disables the
-	 * runtime's automatic enable_thinking handling — we still pass
-	 * enable_thinking=false and append /no_think on every user turn.
+	 * ChatML（见 project.md）。prefix/postfix 不能为空，否则 runtime
+	 * 当裸续写：会复读人设自我介绍，并把「用户句+/no_think」吐回屏上。
+	 * set_chat_template 会关掉自动 thinking 处理 → 仍 enable_thinking=false
+	 * 且每轮 user 后追加 /no_think。
 	 */
-	//挂入 system 模板
-	if (p_set_chat_template)
-		p_set_chat_template(handle, SYSTEM_PROMPT, "", "");
+	if (p_set_chat_template) {
+		int tr = p_set_chat_template(handle, SYSTEM_PROMPT,
+					    "<|im_start|>user\n",
+					    "<|im_end|>\n<|im_start|>assistant\n");
+
+		fprintf(stderr,
+			"rkllm_session: chat_template ChatML ret=%d\n", tr);
+	}
 	return 0;
 }
 
@@ -777,6 +773,8 @@ static void *worker_main(void *arg)
 
 			snprintf(prompt_buf, sizeof(prompt_buf), "%s\n/no_think",
 				 user);
+			fprintf(stderr, "rkllm_session: ask len=%zu head='%.48s'\n",
+				strlen(user), user);
 			memset(&input, 0, sizeof(input));
 			input.role = "user";
 			input.enable_thinking = false;

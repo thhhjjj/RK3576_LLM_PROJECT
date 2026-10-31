@@ -11,6 +11,7 @@
 #include "font.h"
 #include "gpu_disp.h"
 #include "ime/pinyin_api.h"
+#include "frpc_ctl.h"
 
 #include "lvgl/lvgl.h"
 
@@ -20,7 +21,7 @@
 #include <string.h>
 #include <sys/utsname.h>
 
-#define APP_VER_STR "0.9.23"
+#define APP_VER_STR "0.9.32"
 
 #define COL_BG 0x0c1218
 #define COL_PANEL 0x161e28
@@ -92,10 +93,15 @@ static lv_obj_t *ime_py;
 static lv_obj_t *cand_panel;
 static int kb_open;
 static int ask_bar_y_cur = ASK_BAR_Y;
+/* 1=拼音中文（默认）；0=英文直出。左下角键盘图标切换。 */
+static int ime_zh = 1;
 
 /* —— 设置 —— */
 static lv_obj_t *sw_mode;
 static lv_obj_t *lbl_mode;
+static lv_obj_t *sw_frpc;
+static lv_obj_t *lbl_frpc;
+static ui_frpc_fn act_frpc;
 static lv_obj_t *ta_key;
 static lv_obj_t *btn_key_save;
 static lv_obj_t *sw_fps;
@@ -335,6 +341,25 @@ static void chat_scroll_bottom(void)
 }
 
 /* side: 0 助手左，1 用户右，2 系统居中 */
+/*
+ * 短句贴合内容宽度；超过上限再锁宽换行。
+ * （纯 SIZE_CONTENT+max_width 在 LVGL8 常不折行；纯固定宽又会短字配长泡）
+ */
+static void bubble_label_fit(lv_obj_t *lab)
+{
+	lv_coord_t max_w = CHAT_BUBBLE_MAX_W - 28;
+	lv_coord_t w;
+
+	if (!lab)
+		return;
+	lv_label_set_long_mode(lab, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(lab, LV_SIZE_CONTENT);
+	lv_obj_update_layout(lab);
+	w = lv_obj_get_width(lab);
+	if (w > max_w)
+		lv_obj_set_width(lab, max_w);
+}
+
 static lv_obj_t *chat_add_bubble(int side, const char *text, uint32_t bg)
 {
 	lv_obj_t *row;
@@ -380,12 +405,10 @@ static lv_obj_t *chat_add_bubble(int side, const char *text, uint32_t bg)
 	}
 
 	lab = lv_label_create(bubble);
-	lv_label_set_long_mode(lab, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(lab, LV_SIZE_CONTENT);
-	lv_obj_set_style_max_width(lab, CHAT_BUBBLE_MAX_W - 28, 0);
 	lv_label_set_text(lab, text[0] ? text : " ");
 	style_text(lab, side == 2 ? font_small() : font_body(),
 		   side == 2 ? COL_MUTED : COL_TEXT);
+	bubble_label_fit(lab);
 
 	chat_trim_old();
 	chat_scroll_bottom();
@@ -762,8 +785,7 @@ static void kb_show_for(lv_obj_t *ta)
 	/* 立刻可见：不依赖动画从屏外滑入（动画丢帧会「弹不出来」） */
 	lv_anim_del(kb, kb_y_anim_exec);
 	lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
-	if (cand_panel)
-		lv_obj_clear_flag(cand_panel, LV_OBJ_FLAG_HIDDEN);
+	/* 候选条由拼音命中后显示，这里不提前清空 HIDDEN */
 	kb_place_abs(KB_Y_SHOWN);
 	kb_raise();
 
@@ -827,6 +849,48 @@ static void on_kb_cancel(lv_event_t *e)
 	kb_hide();
 }
 
+static void ime_apply_zh(int zh)
+{
+	ime_zh = zh ? 1 : 0;
+	if (!ime_py)
+		return;
+	if (ime_zh) {
+		lv_ime_pinyin_set_keyboard(ime_py, kb);
+		dbg_log("ime zh (pinyin)");
+	} else {
+		lv_ime_pinyin_set_keyboard(ime_py, NULL);
+		if (cand_panel)
+			lv_obj_add_flag(cand_panel, LV_OBJ_FLAG_HIDDEN);
+		dbg_log("ime en (latin)");
+	}
+}
+
+/*
+ * 接管 VALUE_CHANGED：左下角 KEYBOARD 改为 拼/英，不再走默认 CANCEL（关键盘）
+ * 也不走 IME 官方的 K26↔K9（板端会崩）。
+ */
+static void on_kb_value_changed(lv_event_t *e)
+{
+	lv_obj_t *obj = lv_event_get_target(e);
+	uint16_t btn_id;
+	const char *txt;
+
+	btn_id = lv_btnmatrix_get_selected_btn(obj);
+	if (btn_id == LV_BTNMATRIX_BTN_NONE)
+		return;
+	txt = lv_btnmatrix_get_btn_text(obj, btn_id);
+	if (!txt)
+		return;
+
+	if (strcmp(txt, LV_SYMBOL_KEYBOARD) == 0 ||
+	    strcmp(txt, LV_SYMBOL_CLOSE) == 0) {
+		ime_apply_zh(!ime_zh);
+		lv_event_stop_processing(e);
+		return;
+	}
+	lv_keyboard_def_event_cb(e);
+}
+
 static void on_compress(lv_event_t *e)
 {
 	(void)e;
@@ -866,6 +930,35 @@ static void on_mode(lv_event_t *e)
 	set_label(lbl_mode, mode_cloud ? "云端 DeepSeek" : "本地 RKLLM");
 	if (act_mode)
 		act_mode(mode_cloud);
+}
+
+static void frpc_refresh_label(void)
+{
+	char buf[64];
+
+	frpc_ctl_status(buf, sizeof(buf));
+	if (lbl_frpc)
+		lv_label_set_text(lbl_frpc, buf);
+}
+
+static void on_frpc(lv_event_t *e)
+{
+	lv_obj_t *sw = lv_event_get_target(e);
+	int on = lv_obj_has_state(sw, LV_STATE_CHECKED) ? 1 : 0;
+	int ok = 0;
+
+	if (act_frpc)
+		ok = act_frpc(on);
+	else if (on)
+		ok = (frpc_ctl_start() == 0);
+	else
+		ok = (frpc_ctl_stop() == 0);
+
+	if (on && !ok)
+		lv_obj_clear_state(sw, LV_STATE_CHECKED);
+	if (!on && ok)
+		lv_obj_clear_state(sw, LV_STATE_CHECKED);
+	frpc_refresh_label();
 }
 
 static void on_key_save(lv_event_t *e)
@@ -1184,6 +1277,27 @@ static void build_set(lv_obj_t *parent)
 	{
 		lv_obj_t *t = lv_label_create(parent);
 
+		lv_label_set_text(t, "公网隧道 frpc（默认关）");
+		style_text(t, font_body(), COL_MUTED);
+		lv_obj_set_pos(t, 28, y);
+		y += 40;
+		sw_frpc = lv_switch_create(parent);
+		lv_obj_set_pos(sw_frpc, 28, y);
+		lv_obj_add_event_cb(sw_frpc, on_frpc, LV_EVENT_VALUE_CHANGED,
+				    NULL);
+		lbl_frpc = lv_label_create(parent);
+		lv_label_set_text(lbl_frpc, "frpc 关");
+		style_text(lbl_frpc, font_body(), COL_TEXT);
+		lv_obj_set_pos(lbl_frpc, 120, y + 4);
+		y += 72;
+		frpc_refresh_label();
+		if (frpc_ctl_running())
+			lv_obj_add_state(sw_frpc, LV_STATE_CHECKED);
+	}
+
+	{
+		lv_obj_t *t = lv_label_create(parent);
+
 		lv_label_set_text(t, "云端 API Key（仅内存，不落盘）");
 		style_text(t, font_body(), COL_MUTED);
 		lv_obj_set_pos(t, 28, y);
@@ -1365,6 +1479,17 @@ void ui_set_stop_action(ui_action_fn on_stop_fn)
 	act_stop = on_stop_fn;
 }
 
+void ui_set_frpc_hook(ui_frpc_fn on_frpc_fn)
+{
+	act_frpc = on_frpc_fn;
+}
+
+void ui_set_frpc_label(const char *text)
+{
+	if (lbl_frpc && text)
+		lv_label_set_text(lbl_frpc, text);
+}
+
 void ui_set_mode_hook(ui_mode_fn on_mode_fn)
 {
 	act_mode = on_mode_fn;
@@ -1425,6 +1550,10 @@ void ui_create(void)
 	lv_obj_set_style_bg_color(kb, lv_color_hex(COL_BAR_BG), 0);
 	lv_obj_set_style_text_font(kb, font_body(), 0);
 	lv_obj_set_style_text_font(kb, font_body(), LV_PART_ITEMS);
+	/* 去掉默认 VALUE_CHANGED，改由 on_kb_value_changed 转发（拦截左下角） */
+	lv_obj_remove_event_cb(kb, lv_keyboard_def_event_cb);
+	lv_obj_add_event_cb(kb, on_kb_value_changed, LV_EVENT_VALUE_CHANGED,
+			    NULL);
 	lv_obj_add_event_cb(kb, on_kb_ready, LV_EVENT_READY, NULL);
 	lv_obj_add_event_cb(kb, on_kb_cancel, LV_EVENT_CANCEL, NULL);
 	lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
@@ -1434,19 +1563,32 @@ void ui_create(void)
 	if (ime_py) {
 		lv_obj_set_size(ime_py, 0, 0);
 		lv_obj_clear_flag(ime_py, LV_OBJ_FLAG_CLICKABLE);
-		lv_ime_pinyin_set_keyboard(ime_py, kb);
 		lv_obj_set_style_text_font(ime_py, font_body(), 0);
 		lv_obj_set_size(ime_py, 0, 0);
 		lv_obj_clear_flag(ime_py, LV_OBJ_FLAG_CLICKABLE);
 		cand_panel = lv_ime_pinyin_get_cand_panel(ime_py);
 		if (cand_panel) {
 			lv_obj_set_size(cand_panel, PAGE_W, CAND_H);
+			/* btnmatrix 文字在 ITEMS；只设 MAIN 时 CJK 候选会「空白」 */
 			lv_obj_set_style_text_font(cand_panel, font_body(), 0);
+			lv_obj_set_style_text_font(cand_panel, font_body(),
+						  LV_PART_ITEMS);
+			lv_obj_set_style_text_color(cand_panel,
+						    lv_color_hex(COL_TEXT), 0);
+			lv_obj_set_style_text_color(cand_panel,
+						    lv_color_hex(COL_TEXT),
+						    LV_PART_ITEMS);
 			lv_obj_set_style_bg_color(cand_panel,
 						  lv_color_hex(COL_PANEL), 0);
 			lv_obj_set_style_bg_opa(cand_panel, LV_OPA_COVER, 0);
+			lv_obj_set_style_bg_color(cand_panel,
+						  lv_color_hex(0x243040),
+						  LV_PART_ITEMS);
+			lv_obj_set_style_bg_opa(cand_panel, LV_OPA_COVER,
+						  LV_PART_ITEMS);
 			lv_obj_add_flag(cand_panel, LV_OBJ_FLAG_HIDDEN);
 		}
+		ime_apply_zh(1);
 	}
 
 	ask_bar_set_y(ASK_BAR_Y);
@@ -1623,6 +1765,92 @@ static void trim_role_tail_buf(char *s)
 	}
 }
 
+/* 剥离思维标签，避免英文回复把思考正文打进气泡 */
+static void strip_think_tags_buf(char *s)
+{
+	static const char *opens[] = { "<think>", "<thinking>", NULL };
+	static const char *closes[] = { "</think>", "</thinking>", NULL };
+	char *open, *close;
+	const char *p;
+	size_t n;
+	int i, j;
+
+	if (!s || !s[0])
+		return;
+
+	for (;;) {
+		open = NULL;
+		for (i = 0; opens[i]; i++) {
+			char *q = strstr(s, opens[i]);
+
+			if (q && (!open || q < open))
+				open = q;
+		}
+		if (!open)
+			break;
+		close = NULL;
+		for (j = 0; closes[j]; j++) {
+			char *q = strstr(open, closes[j]);
+
+			if (q && (!close || q < close))
+				close = q;
+		}
+		if (!close) {
+			*open = '\0';
+			break;
+		}
+		/* 跳过匹配到的闭合标签 */
+		p = close;
+		for (j = 0; closes[j]; j++) {
+			size_t cl = strlen(closes[j]);
+
+			if (strncmp(close, closes[j], cl) == 0) {
+				p = close + cl;
+				break;
+			}
+		}
+		n = strlen(p);
+		memmove(open, p, n + 1);
+	}
+
+	/* 残留单独闭合标签 */
+	for (;;) {
+		close = NULL;
+		for (j = 0; closes[j]; j++) {
+			char *q = strstr(s, closes[j]);
+
+			if (q && (!close || q < close))
+				close = q;
+		}
+		if (!close)
+			break;
+		p = close;
+		for (j = 0; closes[j]; j++) {
+			size_t cl = strlen(closes[j]);
+
+			if (strncmp(close, closes[j], cl) == 0) {
+				p = close + cl;
+				break;
+			}
+		}
+		n = strlen(p);
+		memmove(close, p, n + 1);
+	}
+
+	p = s;
+	while (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t')
+		p++;
+	if (p != s) {
+		n = strlen(p);
+		memmove(s, p, n + 1);
+	}
+	n = strlen(s);
+	while (n > 0 &&
+	       (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ' ||
+		s[n - 1] == '\t'))
+		s[--n] = '\0';
+}
+
 /* token 去掉空白后是否只剩角色名（整段丢掉，不上屏） */
 static int token_is_role_only(const char *text)
 {
@@ -1659,6 +1887,7 @@ static void stream_apply_clean(void)
 		return;
 	strncpy(buf, cur, sizeof(buf) - 1);
 	buf[sizeof(buf) - 1] = '\0';
+	strip_think_tags_buf(buf);
 	trim_role_tail_buf(buf);
 	if (strcmp(buf, cur) != 0) {
 		dbg_log("asst trim '%s' -> '%s'", cur, buf[0] ? buf : "(empty)");
@@ -1666,6 +1895,7 @@ static void stream_apply_clean(void)
 		if (!buf[0])
 			stream_lead_ws = 1;
 	}
+	bubble_label_fit(stream_lab);
 }
 
 void ui_chat_user(const char *text)
@@ -1742,6 +1972,7 @@ void ui_chat_append_token(const char *text)
 		lv_label_ins_text(stream_lab, LV_LABEL_POS_LAST, p);
 	/* 若本段尾巴拼出了 assistant，立刻裁掉，同一帧内不上屏 */
 	stream_apply_clean();
+	bubble_label_fit(stream_lab);
 	chat_scroll_bottom();
 }
 
@@ -1759,9 +1990,12 @@ void ui_chat_assistant_end(void)
 		} else {
 			strncpy(buf, cur, sizeof(buf) - 1);
 			buf[sizeof(buf) - 1] = '\0';
+			strip_think_tags_buf(buf);
+			trim_role_tail_buf(buf);
 			dbg_log("asst end len=%zu", strlen(buf));
-			lv_label_set_text(stream_lab, buf);
+			lv_label_set_text(stream_lab, buf[0] ? buf : "（空）");
 		}
+		bubble_label_fit(stream_lab);
 	}
 	stream_lab = NULL;
 	stream_lead_ws = 0;

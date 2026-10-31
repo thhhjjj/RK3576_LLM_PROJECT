@@ -3,6 +3,7 @@
  * llm_panel — DRM + LVGL terminal.
  * PHASE2 order: session_load (RKLLM) → then LVGL UI.
  * PHASE3: tokq fan-out → WebSocket :8765.
+ * PHASE5: frpc 可选隧道（设置页开关，默认关）。
  */
 
 #include <signal.h>
@@ -14,6 +15,7 @@
 
 #include "evdev.h"
 #include "font.h"
+#include "frpc_ctl.h"
 #include "metrics.h"
 #include "cloud_sse.h"
 #include "gpu_disp.h"
@@ -134,6 +136,28 @@ static void on_ui_mode(int cloud)
 		ui_chat_assistant_end();
 		ui_append_dialog("已切本地");
 	}
+}
+
+static int on_ui_frpc(int on)
+{
+	char st[64];
+
+	if (on) {
+		if (frpc_ctl_start() != 0) {
+			ui_append_dialog(
+				"frpc 未起：检查 /usr/bin/frpc 与 /etc/frpc.toml");
+			frpc_ctl_status(st, sizeof(st));
+			ui_set_frpc_label(st);
+			return 0;
+		}
+		ui_append_dialog("frpc 已启动（公网 TCP→本机 :8765）");
+	} else {
+		frpc_ctl_stop();
+		ui_append_dialog("frpc 已停止");
+	}
+	frpc_ctl_status(st, sizeof(st));
+	ui_set_frpc_label(st);
+	return 1;
 }
 
 //冲刷打印队列
@@ -313,6 +337,7 @@ int main(int argc, char **argv)
 	ui_set_actions(on_ui_compress, on_ui_ask);
 	ui_set_stop_action(on_ui_stop);
 	ui_set_mode_hook(on_ui_mode);
+	ui_set_frpc_hook(on_ui_frpc);
 	ui_create();
 	ui_set_model_status(model_ok ? "已加载" : "未加载");
 	if (model_ok)

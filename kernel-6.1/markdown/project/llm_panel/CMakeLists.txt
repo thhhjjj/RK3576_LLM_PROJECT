@@ -26,6 +26,7 @@ add_executable(llm_panel
 	gpu_disp.c
 	npu_dvfs.c
 	backlight.c
+	frpc_ctl.c
 	ime/pinyin_bundle.c
 )
 

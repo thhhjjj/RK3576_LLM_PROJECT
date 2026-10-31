@@ -1,7 +1,7 @@
 # PHASE3 已做记录
 
 > 对照 [PHASE3.md](./PHASE3.md)。WiFi/WS 教程：[wifi_ws.md](./wifi_ws.md)。  
-> **主线下一刀**：[PHASE6.md](./PHASE6.md) GPU → [PHASE7.md](./PHASE7.md) 体验；**添头**才是 [PHASE4.md](./PHASE4.md) BLE / [PHASE5.md](./PHASE5.md) frpc。
+> **主线下一刀**：[PHASE6.md](./PHASE6.md) GPU → [PHASE7.md](./PHASE7.md) 体验；**添头**：[PHASE5.md](./PHASE5.md) frpc（[PHASE4](./PHASE4.md) BLE **已取消**）。
 
 ## 进度总览
 

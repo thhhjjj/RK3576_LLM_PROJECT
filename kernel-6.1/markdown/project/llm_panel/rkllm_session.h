@@ -12,8 +12,8 @@
 #define LLM_PANEL_DEFAULT_MODEL "/usr/share/rkllm/QWEN3.5_2B.rkllm"
 /* Qwen3.5-2B VLM vision encoder (installed by prepare.sh; UI multimodal later). */
 #define LLM_PANEL_DEFAULT_VISION "/usr/share/rkllm/vision.rknn"
-/* PHASE7-B：真窗口 2048（须模型 export≥2048；运行时不可超过导出值） */
-#define LLM_PANEL_MAX_CONTEXT 2048
+/* 压测：7k 窗口（7168）。须 .rkllm 导出 max_context_len≥本值，否则 load/跑会炸 */
+#define LLM_PANEL_MAX_CONTEXT 7168
 #define LLM_PANEL_COMPRESS_WATER_PCT 70
 
 struct session_stats {

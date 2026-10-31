@@ -49,7 +49,7 @@ typedef struct {
     lv_pinyin_dict_t * dict;
     lv_ll_t k9_legal_py_ll;
     char * cand_str;            /* Candidate string */
-    char   input_char[16];      /* Input box character */
+    char   input_char[32];      /* Input box character */
 #if LV_IME_PINYIN_USE_K9_MODE
     char   k9_input_str[LV_IME_PINYIN_K9_MAX_INPUT]; /* 9-key input(k9) mode input string */
     uint16_t k9_py_ll_pos;      /* Current pinyin map pages(k9) */

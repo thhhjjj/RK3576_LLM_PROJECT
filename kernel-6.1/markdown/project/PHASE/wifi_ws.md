@@ -147,6 +147,19 @@ adb shell 'udhcpc -i wlan0 -n -q'
 adb shell 'ip -4 addr show wlan0'
 ```
 
+### 4. 开机自动连「已保存网络」
+
+Buildroot 无 Debian 那套 `wlan0-connect.service`。板上已加：
+
+| 文件 | 作用 |
+|---|---|
+| `/etc/wpa_supplicant.conf` | **只改这一处**：写成真实 `ssid` / `psk`（勿留占位 `SSID`/`PASSWORD`） |
+| `/etc/network/interfaces.d/wlan0` | `auto wlan0` + `wpa-conf` → `ifup -a` 会起连 |
+| `/etc/init.d/S38wlan0-connect` | wifibt 后等接口、补 wpa/DHCP（占位账号会跳过并打日志） |
+
+源码副本：`llm_panel/rootfs_wifi/`（刷机后可再 `adb push`）。  
+改好 conf 后重启验收：`wpa_cli -i wlan0 status` 应为 `COMPLETED`，且 `ip -4 addr show wlan0` 有 `inet`。
+
 ---
 
 ## 四、五分钟验收 WebSocket（照做）

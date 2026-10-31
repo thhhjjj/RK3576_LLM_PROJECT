@@ -1,0 +1,67 @@
+#!/bin/sh
+# Wait for Seekwave wlan0, then ensure wpa + DHCP using saved /etc/wpa_supplicant.conf
+WPA_CONF=/etc/wpa_supplicant.conf
+
+wait_wlan() {
+	i=0
+	while [ $i -lt 40 ]; do
+		if grep -wq "wlan0" /proc/net/dev; then
+			ip link set wlan0 up 2>/dev/null || true
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 0.5
+	done
+	echo "S38wlan0-connect: wlan0 not ready"
+	return 1
+}
+
+start_wpa() {
+	[ -r "$WPA_CONF" ] || { echo "S38wlan0-connect: missing $WPA_CONF"; return 1; }
+	# skip obvious placeholders
+	if grep -q 'ssid="SSID"' "$WPA_CONF" 2>/dev/null; then
+		echo "S38wlan0-connect: edit $WPA_CONF (still placeholder SSID)"
+		return 1
+	fi
+	if ! pgrep -x wpa_supplicant >/dev/null 2>&1; then
+		wpa_supplicant -B -i wlan0 -c "$WPA_CONF"
+	fi
+	j=0
+	while [ $j -lt 30 ]; do
+		st=$(wpa_cli -i wlan0 status 2>/dev/null | grep wpa_state= | cut -d= -f2)
+		[ "$st" = "COMPLETED" ] && break
+		j=$((j + 1))
+		sleep 1
+	done
+	st=$(wpa_cli -i wlan0 status 2>/dev/null | grep wpa_state= | cut -d= -f2)
+	echo "S38wlan0-connect: wpa_state=$st"
+	[ "$st" = "COMPLETED" ] || return 1
+	# DHCP if no IPv4 yet
+	if ! ip -4 addr show wlan0 | grep -q "inet "; then
+		if command -v udhcpc >/dev/null 2>&1; then
+			udhcpc -i wlan0 -n -q -t 8 || true
+		elif command -v dhcpcd >/dev/null 2>&1; then
+			dhcpcd -n wlan0 || true
+		fi
+	fi
+	ip -4 addr show wlan0 | grep inet || true
+}
+
+case "$1" in
+	start)
+		wait_wlan || exit 0
+		start_wpa || exit 0
+		;;
+	stop)
+		# leave association; ifdown handles teardown
+		;;
+	restart)
+		"$0" stop
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac
+exit 0

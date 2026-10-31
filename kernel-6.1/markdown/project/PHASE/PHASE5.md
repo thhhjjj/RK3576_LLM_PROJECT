@@ -45,4 +45,6 @@
 
 ## 当前状态
 
-**未开工。** 等 PHASE3 云端板测收口、PHASE4 GATT 按需推进后再决定是否装 frpc。
+**暂缓。** PHASE4 BLE **已取消**；无 VPS 则 frps 搁置。  
+客户端骨架（`frpc_ctl` / 设置开关 / toml 模板）可留着，默认关。公网需求出现后再选 frpc 或 Tailscale。  
+日常验收继续用局域网：`ws://板IP:8765/` + `www/ws_test.html`。

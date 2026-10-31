@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>llm_panel 拼音 IME 网页自测</title>
+<style>
+  :root {
+    --bg: #0c1218;
+    --panel: #161e28;
+    --text: #e6edf3;
+    --muted: #8b9aab;
+    --accent: #3d9a8b;
+    --bar: #243040;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    font-family: "PingFang SC", "Noto Sans SC", sans-serif;
+    background: radial-gradient(1200px 600px at 20% 0%, #1a2838, var(--bg));
+    color: var(--text);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 24px 16px 48px;
+  }
+  h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 6px; }
+  .sub { color: var(--muted); font-size: .9rem; margin-bottom: 20px; }
+  .box {
+    width: min(720px, 100%);
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.35);
+  }
+  #out {
+    min-height: 72px; padding: 12px 14px;
+    background: #0f1620; border-radius: 8px;
+    font-size: 1.25rem; line-height: 1.5;
+    word-break: break-all; margin-bottom: 10px;
+  }
+  #out .py { color: var(--accent); }
+  #comp {
+    font-size: .85rem; color: var(--muted); margin-bottom: 10px;
+    min-height: 1.2em;
+  }
+  #cands {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    min-height: 44px; margin-bottom: 14px;
+    padding: 8px; background: var(--bar); border-radius: 8px;
+  }
+  #cands button {
+    border: 0; border-radius: 8px; padding: 8px 12px;
+    background: #2a3648; color: var(--text);
+    font-size: 1.05rem; cursor: pointer;
+  }
+  #cands button:hover { background: var(--accent); color: #04110e; }
+  #cands .empty { color: var(--muted); font-size: .85rem; padding: 6px; }
+  .keys {
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    gap: 6px;
+  }
+  .keys button {
+    border: 0; border-radius: 8px; padding: 12px 0;
+    background: #1c2634; color: var(--text);
+    font-size: 1rem; cursor: pointer;
+  }
+  .keys button:active { background: var(--accent); }
+  .row2 { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(9, 1fr); gap: 6px; }
+  .row3 { grid-column: 1 / -1; display: grid; grid-template-columns: 1.2fr repeat(7, 1fr) 1.2fr; gap: 6px; }
+  .wide { grid-column: span 2; }
+  .hint { margin-top: 16px; color: var(--muted); font-size: .85rem; line-height: 1.5; width: min(720px, 100%); }
+  code { color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>拼音 IME 网页自测</h1>
+  <p class="sub">对齐板端逻辑：词组优先 · 选字后剩余拼音继续出候选</p>
+  <div class="box">
+    <div id="out"><span class="placeholder" style="color:#8b9aab">点下面字母开始…</span></div>
+    <div id="comp"></div>
+    <div id="cands"><span class="empty">候选区</span></div>
+    <div class="keys" id="kb"></div>
+  </div>
+  <p class="hint">
+    建议用例：<code>nihao</code> 应出「你好」；先选「你」后应继续出「好」。
+    <code>diannao</code> →「电脑」；<code>shenme</code> →「什么」。
+  </p>
+  <script src="dict.js"></script>
+  <script>
+(function () {
+  const SYLL = window.PINYIN_SYLL || {};
+  const PHRASE = window.PINYIN_PHRASE || [];
+  let committed = '';
+  let composing = '';
+
+  const out = document.getElementById('out');
+  const comp = document.getElementById('comp');
+  const candsEl = document.getElementById('cands');
+
+  function exactSyll(py) { return SYLL[py] || null; }
+
+  function prefixSyll(py) {
+    if (!py) return null;
+    const keys = Object.keys(SYLL).filter(k => k.startsWith(py)).sort((a,b)=>a.length-b.length);
+    return keys.length ? SYLL[keys[0]] : null;
+  }
+
+  function longestSyllable(py) {
+    const max = Math.min(py.length, 6);
+    for (let n = max; n >= 1; n--) {
+      const t = py.slice(0, n);
+      if (exactSyll(t)) return n;
+    }
+    if (prefixSyll(py)) return py.length;
+    return 0;
+  }
+
+  function phrasePyLen(word) {
+    for (const [py, w] of PHRASE) if (w === word) return py.length;
+    return -1;
+  }
+
+  function buildCands(py) {
+    const list = [];
+    const seen = new Set();
+    const add = (s) => { if (s && !seen.has(s)) { seen.add(s); list.push(s); } };
+
+    if (!py) return list;
+    for (const [ppy, word] of PHRASE) {
+      if (ppy === py) add(word);
+      else if (ppy.length > py.length && ppy.startsWith(py)) {
+        /* 须打进第二音节，避免 ni 就出「你好」 */
+        const syl1 = longestSyllable(ppy) || 1;
+        if (py.length > syl1) add(word);
+      } else if (py.length > ppy.length && ppy.length >= 2 && py.startsWith(ppy)) {
+        add(word);
+      }
+    }
+    let chars = exactSyll(py) || prefixSyll(py);
+    if (chars) {
+      for (const ch of chars) add(ch);
+    } else {
+      const syl = longestSyllable(py);
+      if (syl > 0 && syl < py.length) {
+        const first = py.slice(0, syl);
+        chars = exactSyll(first) || prefixSyll(first);
+        if (chars) for (const ch of chars) add(ch);
+      }
+    }
+    return list.slice(0, 48);
+  }
+
+  function utf8Chars(s) {
+    return [...s].length;
+  }
+
+  function render() {
+    out.innerHTML = (committed || '') +
+      (composing ? '<span class="py">' + composing + '</span>' : '') ||
+      '<span style="color:#8b9aab">点下面字母开始…</span>';
+    comp.textContent = composing ? ('拼音：' + composing) : '';
+    const cands = buildCands(composing);
+    candsEl.innerHTML = '';
+    if (!cands.length) {
+      candsEl.innerHTML = '<span class="empty">' + (composing ? '无候选' : '候选区') + '</span>';
+      return;
+    }
+    cands.forEach((c, i) => {
+      const b = document.createElement('button');
+      b.textContent = (i < 9 ? (i + 1) + ' ' : '') + c;
+      b.onclick = () => pick(c);
+      candsEl.appendChild(b);
+    });
+  }
+
+  function pick(txt) {
+    if (!composing) return;
+    let consumed;
+    if (utf8Chars(txt) >= 2) {
+      consumed = phrasePyLen(txt);
+      if (consumed <= 0) consumed = composing.length;
+    } else {
+      consumed = longestSyllable(composing);
+      if (consumed <= 0) consumed = composing.length;
+    }
+    const rest = consumed < composing.length ? composing.slice(consumed) : '';
+    committed += txt;
+    composing = rest;
+    render();
+  }
+
+  function typeLetter(ch) {
+    composing += ch.toLowerCase();
+    render();
+  }
+
+  function backspace() {
+    if (composing) composing = composing.slice(0, -1);
+    else if (committed) committed = committed.slice(0, -1);
+    render();
+  }
+
+  function clearAll() {
+    committed = '';
+    composing = '';
+    render();
+  }
+
+  const rows = [
+    'qwertyuiop'.split(''),
+    'asdfghjkl'.split(''),
+    ['⌫', ...'zxcvbnm'.split(''), '清空']
+  ];
+  const kb = document.getElementById('kb');
+  rows[0].forEach(k => {
+    const b = document.createElement('button');
+    b.textContent = k; b.onclick = () => typeLetter(k); kb.appendChild(b);
+  });
+  const r2 = document.createElement('div'); r2.className = 'row2';
+  rows[1].forEach(k => {
+    const b = document.createElement('button');
+    b.textContent = k; b.onclick = () => typeLetter(k); r2.appendChild(b);
+  });
+  kb.appendChild(r2);
+  const r3 = document.createElement('div'); r3.className = 'row3';
+  rows[2].forEach(k => {
+    const b = document.createElement('button');
+    b.textContent = k;
+    if (k === '⌫') b.onclick = backspace;
+    else if (k === '清空') { b.className = 'wide'; b.onclick = clearAll; }
+    else b.onclick = () => typeLetter(k);
+    r3.appendChild(b);
+  });
+  kb.appendChild(r3);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key >= 'a' && e.key <= 'z') { typeLetter(e.key); e.preventDefault(); }
+    else if (e.key >= 'A' && e.key <= 'Z') { typeLetter(e.key); e.preventDefault(); }
+    else if (e.key === 'Backspace') { backspace(); e.preventDefault(); }
+    else if (e.key >= '1' && e.key <= '9') {
+      const cands = buildCands(composing);
+      const i = +e.key - 1;
+      if (cands[i]) { pick(cands[i]); e.preventDefault(); }
+    }
+  });
+
+  render();
+})();
+  </script>
+</body>
+</html>

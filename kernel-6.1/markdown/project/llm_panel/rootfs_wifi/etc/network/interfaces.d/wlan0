@@ -1,0 +1,6 @@
+# Seekwave wlan0：开机 ifup -a 自动连 /etc/wpa_supplicant.conf 里保存的网络
+auto wlan0
+iface wlan0 inet manual
+	wpa-conf /var/run/wpa_supplicant/wpa_supplicant.conf
+	dhcp-up /sbin/dhcpcd
+	dhcp-down /sbin/dhcpcd -k
