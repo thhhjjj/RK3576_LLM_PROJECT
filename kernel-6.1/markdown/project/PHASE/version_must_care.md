@@ -104,7 +104,7 @@ bash makediff/git_push_must_change.sh makediff
 OUT=buildroot/output/rockchip_rk3576_kickpi_k7c_llm
 rm -f kernel-6.1/markdown/project/llm_panel/Makefile
 make -C buildroot O=$PWD/$OUT llm_panel-dirclean llm_panel-rebuild
-strings $OUT/target/usr/bin/llm_panel | grep 0.9.17
+strings $OUT/target/usr/bin/llm_panel | grep 0.9.23
 cp -v $OUT/target/usr/bin/llm_panel ~/Desktop/
 
 

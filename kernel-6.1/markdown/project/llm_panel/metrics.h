@@ -11,6 +11,7 @@ struct llm_metrics {
 	unsigned npu_load_pct;		/* from /proc/rknpu/load, 0 if missing */
 	int npu_temp_c;			/* from llm_ctrl sysfs, INT_MIN if fail */
 	unsigned gpu_load_pct;		/* from devfreq load, 0 if missing */
+	unsigned mem_bus_pct;		/* DDR/DMC bus load %, 0 if missing */
 	uint64_t net_rx_Bps;		/* wlan0 bytes/s since last sample */
 	uint64_t net_tx_Bps;
 	int valid;			/* bit flags: see METRICS_HAVE_* */
@@ -22,6 +23,7 @@ struct llm_metrics {
 #define METRICS_HAVE_NPU_TEMP	(1u << 3)
 #define METRICS_HAVE_GPU	(1u << 4)
 #define METRICS_HAVE_NET	(1u << 5)
+#define METRICS_HAVE_MEM_BUS	(1u << 6)
 
 /* Call once at start; discovers GPU load path under /sys/class/devfreq. */
 int metrics_init(void);

@@ -90,7 +90,8 @@ static size_t reply_acc_n;
 static pthread_mutex_t reply_lock = PTHREAD_MUTEX_INITIALIZER;
 /*
  * drop_thinking: answer already shown; ignore rest (and abort).
- * skip_pre_think: model started with Thinking Process; wait for CJK answer.
+ * skip_pre_think: model started with think block; wait until answer starts
+ * (</think> / CJK / 非思维续写的正文)，不能只等中文——英文问句会被丢成空。
  */
 static int drop_thinking;
 static int skip_pre_think;
@@ -202,17 +203,97 @@ static char *find_thinking_mark(char *s)
 	return best;
 }
 
+static const char *after_think_close(const char *s)
+{
+	static const char *ends[] = {
+		"</think>",
+		"</thinking>",
+		NULL,
+	};
+	const char *best = NULL;
+	int i;
+
+	for (i = 0; ends[i]; i++) {
+		const char *p = strstr(s, ends[i]);
+
+		if (!p)
+			continue;
+		p += strlen(ends[i]);
+		while (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t')
+			p++;
+		if (!best || p > best)
+			best = p;
+	}
+	return best;
+}
+
 static const char *first_cjk_utf8(const char *s)
 {
 	const unsigned char *p = (const unsigned char *)s;
 
 	while (*p) {
-		/* Rough CJK Unified Ideographs UTF-8 lead bytes. */
 		if (p[0] >= 0xE4 && p[0] <= 0xE9 && p[1] && p[2])
 			return (const char *)p;
 		p++;
 	}
 	return NULL;
+}
+
+/*
+ * Think-first 时答案起点：</think> 后正文；或思维标记后空行；或中文。
+ * 供 skip 中途 / FINISH 兜底共用（英文问句不能只等 CJK）。
+ */
+static const char *answer_from_think_buf(const char *s)
+{
+	const char *after = after_think_close(s);
+	char *mark;
+	const char *p;
+	const char *cjk;
+
+	if (after && *after)
+		return after;
+
+	mark = find_thinking_mark((char *)s);
+	if (mark) {
+		p = strstr(mark, "\n\n");
+		if (p) {
+			p += 2;
+			while (*p == '\n' || *p == '\r' || *p == ' ' ||
+			       *p == '\t')
+				p++;
+			if (*p)
+				return p;
+		}
+	}
+
+	cjk = first_cjk_utf8(s);
+	if (cjk)
+		return cjk;
+	return NULL;
+}
+
+/* 把 ans 挪到 reply_acc 开头 */
+static void reply_keep_from(const char *ans)
+{
+	size_t len;
+
+	if (!ans || !ans[0]) {
+		reply_acc_n = 0;
+		reply_acc[0] = '\0';
+		return;
+	}
+	if (ans >= reply_acc && ans < reply_acc + sizeof(reply_acc)) {
+		len = strlen(ans);
+		memmove(reply_acc, ans, len + 1);
+		reply_acc_n = len;
+		return;
+	}
+	len = strlen(ans);
+	if (len >= sizeof(reply_acc))
+		len = sizeof(reply_acc) - 1;
+	memcpy(reply_acc, ans, len);
+	reply_acc[len] = '\0';
+	reply_acc_n = len;
 }
 
 static void trim_thinking_tail(void)
@@ -308,7 +389,6 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 		size_t old_n;
 		char *mark;
 		char partial[512];
-		const char *cjk;
 
 		/* Prefill after compress: stop ASAP, never paint UI. */
 		if (prefilling) {
@@ -333,23 +413,29 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 			return 0;
 		}
 
-		/* Thinking came first: wait until CJK answer tokens appear. */
+		/* Think-first: 继续攒，直到能抽出答案再上屏 */
 		if (skip_pre_think) {
-			cjk = first_cjk_utf8(result->text);
-			if (!cjk) {
+			const char *ans;
+
+			if (reply_acc_n + len < sizeof(reply_acc) - 1) {
+				memcpy(reply_acc + reply_acc_n, result->text,
+				       len);
+				reply_acc_n += len;
+				reply_acc[reply_acc_n] = '\0';
+			}
+			ans = answer_from_think_buf(reply_acc);
+			if (!ans || !ans[0]) {
 				pthread_mutex_unlock(&reply_lock);
 				return 0;
 			}
 			skip_pre_think = 0;
-			len = strlen(cjk);
+			reply_keep_from(ans);
 			gen_tokens++;
-			if (reply_acc_n + len < sizeof(reply_acc) - 1) {
-				memcpy(reply_acc + reply_acc_n, cjk, len);
-				reply_acc_n += len;
-				reply_acc[reply_acc_n] = '\0';
-			}
 			pthread_mutex_unlock(&reply_lock);
-			tokq_push(TOKQ_TOKEN, cjk);
+			tokq_push(TOKQ_TOKEN, reply_acc);
+			fprintf(stderr,
+				"rkllm_session: think→answer len=%zu\n",
+				strlen(reply_acc));
 			return 0;
 		}
 
@@ -364,6 +450,7 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 		mark = find_thinking_mark(reply_acc);
 		if (mark) {
 			size_t keep = (size_t)(mark - reply_acc);
+			const char *ans;
 
 			while (keep > 0 &&
 			       (reply_acc[keep - 1] == '\n' ||
@@ -372,9 +459,21 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 				keep--;
 
 			if (keep < THINK_ANSWER_MIN) {
-				/* Think-then-answer: discard prefix, wait for CJK. */
-				reply_acc_n = 0;
-				reply_acc[0] = '\0';
+				/* 同缓冲已有 </think> 后正文则立刻出答案 */
+				ans = answer_from_think_buf(reply_acc);
+				if (ans && *ans &&
+				    (after_think_close(reply_acc) ||
+				     first_cjk_utf8(ans) == ans ||
+				     strstr(mark, "\n\n"))) {
+					skip_pre_think = 0;
+					reply_keep_from(ans);
+					pthread_mutex_unlock(&reply_lock);
+					tokq_push(TOKQ_TOKEN, reply_acc);
+					fprintf(stderr,
+						"rkllm_session: skip leading think (inline answer)\n");
+					return 0;
+				}
+				/* 保留缓冲等闭合标签 / 空行 / 中文；先不上屏 */
 				skip_pre_think = 1;
 				pthread_mutex_unlock(&reply_lock);
 				fprintf(stderr,
@@ -427,19 +526,51 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 
 		{
 			int empty;
+			int salvage = 0;
+			char salvage_buf[MSG_MAX];
 
+			salvage_buf[0] = '\0';
 			pthread_mutex_lock(&reply_lock);
+			/*
+			 * Think-first 若一直没抽出答案：FINISH 再抽一次。
+			 * 必须先于 trim_thinking_tail（它会砍掉 mark 之后的正文）。
+			 */
+			if (skip_pre_think && reply_acc_n) {
+				const char *ans =
+					answer_from_think_buf(reply_acc);
+
+				if (ans && *ans) {
+					reply_keep_from(ans);
+					salvage = 1;
+					fprintf(stderr,
+						"rkllm_session: finish salvage answer len=%zu\n",
+						reply_acc_n);
+				} else {
+					reply_acc_n = 0;
+					reply_acc[0] = '\0';
+				}
+				skip_pre_think = 0;
+			}
 			trim_thinking_tail();
 			strip_role_noise();
 			empty = (reply_acc_n == 0);
-			if (!empty)
+			if (!empty) {
 				hist_push('a', reply_acc);
+				if (salvage) {
+					strncpy(salvage_buf, reply_acc,
+						sizeof(salvage_buf) - 1);
+					salvage_buf[sizeof(salvage_buf) - 1] =
+						'\0';
+				}
+			}
 			reply_acc_n = 0;
 			reply_acc[0] = '\0';
 			drop_thinking = 0;
 			skip_pre_think = 0;
 			pthread_mutex_unlock(&reply_lock);
 
+			if (salvage && salvage_buf[0])
+				tokq_push(TOKQ_TOKEN, salvage_buf);
 			if (empty)
 				tokq_push(TOKQ_STATUS, "[无有效回答]");
 			tokq_push(TOKQ_FINISH, NULL);

@@ -78,9 +78,12 @@ static void on_ui_stop(void)
 	ui_append_dialog("已请求停止，等待本轮结束…");
 }
 
-static void on_ui_ask(void)
+static void on_ui_ask(const char *q)
 {
-	const char *q = session_smoke_question();
+	if (!q || !q[0]) {
+		ui_append_dialog("请输入问题");
+		return;
+	}
 
 	if (ui_mode_is_cloud()) {
 		if (!cloud_sse_has_key()) {

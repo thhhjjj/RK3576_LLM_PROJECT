@@ -19,6 +19,8 @@
 
 static char gpu_load_path[PATH_MAX];
 static int have_gpu_path;
+static char mem_bus_load_path[PATH_MAX];
+static int have_mem_bus_path;
 
 static uint64_t prev_idle, prev_total;
 static int have_cpu_prev;
@@ -143,6 +145,38 @@ static int probe_gpu_load_path(void)
 	return have_gpu_path ? 0 : -ENOENT;
 }
 
+/* DDR/DMC 总线占用：Rockchip 通常在 /sys/class/devfreq/<dmc|ddr>/load */
+static int probe_mem_bus_load_path(void)
+{
+	DIR *d = opendir("/sys/class/devfreq");
+	struct dirent *de;
+
+	mem_bus_load_path[0] = '\0';
+	have_mem_bus_path = 0;
+	if (!d)
+		return -errno;
+
+	while ((de = readdir(d)) != NULL) {
+		char loadp[PATH_MAX];
+		const char *n = de->d_name;
+
+		if (n[0] == '.')
+			continue;
+		if (!strstr(n, "dmc") && !strstr(n, "ddr") &&
+		    !strstr(n, "DMC") && !strstr(n, "DDR"))
+			continue;
+		snprintf(loadp, sizeof(loadp), "/sys/class/devfreq/%s/load", n);
+		if (access(loadp, R_OK) == 0) {
+			snprintf(mem_bus_load_path, sizeof(mem_bus_load_path),
+				 "%s", loadp);
+			have_mem_bus_path = 1;
+			break;
+		}
+	}
+	closedir(d);
+	return have_mem_bus_path ? 0 : -ENOENT;
+}
+
 //初始化指标模块
 int metrics_init(void)
 {
@@ -154,6 +188,12 @@ int metrics_init(void)
 		fprintf(stderr, "metrics: GPU load path %s\n", gpu_load_path);
 	else
 		fprintf(stderr, "metrics: no GPU load sysfs found\n");
+	probe_mem_bus_load_path();
+	if (have_mem_bus_path)
+		fprintf(stderr, "metrics: mem bus load path %s\n",
+			mem_bus_load_path);
+	else
+		fprintf(stderr, "metrics: mem bus load path not found\n");
 	return 0;
 }
 
@@ -308,6 +348,33 @@ static int sample_gpu(struct llm_metrics *m)
 	return 0;
 }
 
+static int sample_mem_bus(struct llm_metrics *m)
+{
+	FILE *f;
+	unsigned v = 0;
+	char buf[64];
+
+	if (!have_mem_bus_path)
+		return -ENOENT;
+	f = fopen(mem_bus_load_path, "r");
+	if (!f)
+		return -errno;
+	if (!fgets(buf, sizeof(buf), f)) {
+		fclose(f);
+		return -EINVAL;
+	}
+	fclose(f);
+	if (sscanf(buf, "%u%%", &v) != 1 &&
+	    sscanf(buf, "@%u%%", &v) != 1 &&
+	    sscanf(buf, "%u", &v) != 1)
+		return -EINVAL;
+	if (v > 100)
+		v = 100;
+	m->mem_bus_pct = v;
+	m->valid |= METRICS_HAVE_MEM_BUS;
+	return 0;
+}
+
 static int sample_net(struct llm_metrics *m)
 {
 	FILE *f = fopen(NET_DEV_PATH, "r");
@@ -370,6 +437,7 @@ int metrics_sample(struct llm_metrics *out)
 	memset(out, 0, sizeof(*out));
 	out->npu_temp_c = INT_MIN;
 	sample_mem(out);
+	sample_mem_bus(out);
 	sample_cpu(out);
 	sample_npu_load(out);
 	sample_npu_temp(out);
@@ -384,10 +452,11 @@ int metrics_sample(struct llm_metrics *out)
 
 void metrics_print(const struct llm_metrics *m)
 {
-	printf("mem=%llu/%llu kB  cpu=%u%%  npu_load=%u%%  npu_temp=%s%d%s  "
-	       "gpu=%u%%  rx=%llu B/s  tx=%llu B/s\n",
+	printf("mem=%llu/%llu kB  mem_bus=%u%%  cpu=%u%%  npu_load=%u%%  "
+	       "npu_temp=%s%d%s  gpu=%u%%  rx=%llu B/s  tx=%llu B/s\n",
 	       (unsigned long long)m->mem_available_kb,
 	       (unsigned long long)m->mem_total_kb,
+	       (m->valid & METRICS_HAVE_MEM_BUS) ? m->mem_bus_pct : 0,
 	       (m->valid & METRICS_HAVE_CPU) ? m->cpu_pct : 0,
 	       (m->valid & METRICS_HAVE_NPU_LOAD) ? m->npu_load_pct : 0,
 	       (m->valid & METRICS_HAVE_NPU_TEMP) ? "" : "?",

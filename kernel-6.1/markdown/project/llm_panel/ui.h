@@ -27,8 +27,9 @@ int ui_fps_target_hz(void);
 int ui_mode_is_cloud(void);
 
 typedef void (*ui_action_fn)(void);
+typedef void (*ui_ask_fn)(const char *q);
 typedef void (*ui_mode_fn)(int cloud);
-void ui_set_actions(ui_action_fn on_compress, ui_action_fn on_ask);
+void ui_set_actions(ui_action_fn on_compress, ui_ask_fn on_ask);
 void ui_set_stop_action(ui_action_fn on_stop);
 void ui_set_mode_hook(ui_mode_fn on_mode);
 

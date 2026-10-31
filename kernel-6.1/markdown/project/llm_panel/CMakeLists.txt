@@ -9,6 +9,7 @@ include_directories(
 	${CMAKE_SYSROOT}/usr/include/lvgl
 	${CMAKE_SYSROOT}/usr/include/lvgl/lv_drivers
 	${PROJECT_SOURCE_DIR}
+	${PROJECT_SOURCE_DIR}/ime
 )
 
 add_executable(llm_panel
@@ -25,6 +26,7 @@ add_executable(llm_panel
 	gpu_disp.c
 	npu_dvfs.c
 	backlight.c
+	ime/pinyin_bundle.c
 )
 
 target_link_libraries(llm_panel

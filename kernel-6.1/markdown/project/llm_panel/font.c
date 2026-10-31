@@ -48,6 +48,18 @@ int font_init(void)
 		return -1;
 	}
 
+	/*
+	 * 软键盘功能键用 LV_SYMBOL_*（FontAwesome 区段），思源黑体没有这些码点。
+	 * 挂 Montserrat 作 fallback，字母/中文走思源，图标走 Montserrat。
+	 */
+	/* montserrat_14 在 Rockchip LVGL 默认必开；20 可能未编入 */
+	if (ft_title.font)
+		((lv_font_t *)ft_title.font)->fallback = &lv_font_montserrat_14;
+	if (ft_body.font)
+		((lv_font_t *)ft_body.font)->fallback = &lv_font_montserrat_14;
+	if (ft_small.font)
+		((lv_font_t *)ft_small.font)->fallback = &lv_font_montserrat_14;
+
 	ready = 1;
 	printf("llm_panel: Chinese font ready (%s)\n", FONT_PATH);
 	return 0;
