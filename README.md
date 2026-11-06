@@ -1,6 +1,6 @@
 # RK3576 LLM — 差分包（makediff）使用说明
 
-> 同步状态（2026-10-17）：PHASE1 已收官。PHASE2 已接 RKLLM 骨架（`dlopen` + 先 load 再 UI）；把 `librkllmrt.so` / `default.rkllm` 丢进 `rkllm_autoload/` 即可进镜像。见 `PHASE/PHASE2.md`、`rkllm_autoload/README.md`。
+> RK3576 端侧 LLM 差分包：LVGL 面板 + RKLLM（`dlopen`，先 load 再 UI）。把 `librkllmrt.so` / `.rkllm` 放进 `rkllm_autoload/` 即可编进镜像。模型说明见 `rkllm_autoload/README.md`。
 
 日常**只在本目录（或云端轻量仓 `RK3576_LLM_PROJECT`）提交**。完整 SDK（~20GB）不当日常推送目标。
 
@@ -32,7 +32,7 @@ makediff/
 │       ├── llm_ctrl/                # 温控 ko + nl_watch（*.md 跳过）
 │       └── llm_panel/               # LVGL 面板源码
 ├── llm_ctrl_autoload/llm_ctrl.ko    # 预编译模块 → 编 rootfs 时装入
-├── rkllm_autoload/                  # PHASE2：librkllmrt.so + models/*.rkllm（默认不进 git）
+├── rkllm_autoload/                  # librkllmrt.so + models/*.rkllm（默认不进 git）
 └── scripts/git_push_must_change.sh  # 同脚本副本
 ```
 

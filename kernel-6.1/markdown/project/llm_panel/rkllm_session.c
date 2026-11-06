@@ -776,7 +776,7 @@ static int create_handle(const char *model_path)
 		return -1;
 	}
 	/*
-	 * ChatML（见 project.md）。prefix/postfix 不能为空，否则 runtime
+	 * ChatML。prefix/postfix 不能为空，否则 runtime
 	 * 当裸续写：会复读人设自我介绍，并把「用户句+/no_think」吐回屏上。
 	 * set_chat_template 会关掉自动 thinking 处理 → 仍 enable_thinking=false
 	 * 且每轮 user 后追加 /no_think。

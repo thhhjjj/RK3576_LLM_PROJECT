@@ -1,4 +1,4 @@
-# rkllm_autoload — PHASE2 运行时 / 模型暂存
+# rkllm_autoload — RKLLM 运行时 / 模型暂存
 
 本树没有正式的 Buildroot `librkllm` 包。把板端文件丢进这里，编 rootfs 时由 `overlays/30-llm_ctrl/prepare.sh` 装进镜像。
 
@@ -73,8 +73,9 @@ ls -lh /usr/lib/librkllmrt.so \
 
 `.rkllm` / `.rknn` 默认不进 git（体积大）。`librkllmrt.so` 可提交。
 
-## 收口烤进镜像（冷启动）
+## 烤进镜像
 
-本机已把语言侧链到 `models/QWEN3.5_2B.rkllm`（源：`Desktop/AI deal/`，硬链，不占双倍盘）。  
-SMB 同步到 VM 后编 rootfs：`prepare.sh` 会装到板上 `/usr/share/rkllm/QWEN3.5_2B.rkllm`。  
-冷启动验收见 `PHASE/PHASE2_DID.md` 收口清单——刷机后勿再 `adb push` 模型。
+把 `models/QWEN3.5_2B.rkllm`（及可选 `vision.rknn`）放好后编 rootfs：`prepare.sh` 会装到板上 `/usr/share/rkllm/`。  
+刷机后建议冷启动验收；勿再随意 `adb push` 覆盖模型除非你清楚版本一致性。
+
+自行从 HF 重导出见 [`export/README.md`](export/README.md)。
