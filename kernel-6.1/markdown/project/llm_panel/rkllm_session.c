@@ -29,7 +29,8 @@
 
 static const char *SYSTEM_PROMPT =
 	"你是小千问（Qwen3.5-2B），说话热情、轻松、有趣。"
-	"用户是主人，回答请简明。";
+	"用户是主人，回答请简明。"
+	"直接回答，不要输出思维过程，不要输出 think / Thinking 标签。";
 
 static const char *SMOKE_Q = "用一句话介绍 RK3576 上的 RKNPU。";
 
@@ -249,9 +250,8 @@ static const char *first_cjk_utf8(const char *s)
 }
 
 /*
- * Think-first 答案起点：只认闭合标签之后。
- * 禁止用思维块内部空行当答案（英文思考常有 \n\n，会把
- * 后续 </think>+正文整段推上屏）。
+ * Think-first 答案起点（流式）：只认闭合标签之后，或非 XML 的 Thinking 空行后。
+ * 未闭合 <think> 在流式阶段返回 NULL，避免把思维里的中文提前刷上屏。
  */
 static const char *answer_from_think_buf(const char *s)
 {
@@ -370,6 +370,69 @@ static void strip_role_noise(void)
 			}
 		}
 	}
+}
+
+/*
+ * FINISH 兜底：Qwen3.5 常只开 <think> 不关就把答案写在里面，
+ * 流式抽不出 → 结束时再剥标签 / 取首个 CJK。
+ */
+static int salvage_reply_from_think(void)
+{
+	const char *ans;
+	const char *p;
+	const char *cjk;
+	char *mark;
+
+	ans = answer_from_think_buf(reply_acc);
+	if (ans && *ans) {
+		reply_keep_from(ans);
+		strip_role_noise();
+		return reply_acc_n > 0;
+	}
+
+	mark = find_thinking_mark(reply_acc);
+	if (mark && mark[0] == '<') {
+		p = mark + strlen("<think>");
+		while (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t')
+			p++;
+		cjk = first_cjk_utf8(p);
+		if (cjk)
+			reply_keep_from(cjk);
+		else if (*p)
+			reply_keep_from(p);
+		else
+			return 0;
+		strip_role_noise();
+		return reply_acc_n > 0;
+	}
+	if (mark && mark[0] != '<') {
+		p = strstr(mark, "\n\n");
+		if (p) {
+			p += 2;
+			while (*p == '\n' || *p == '\r' || *p == ' ' ||
+			       *p == '\t')
+				p++;
+			if (*p) {
+				reply_keep_from(p);
+				strip_role_noise();
+				return reply_acc_n > 0;
+			}
+		}
+		cjk = first_cjk_utf8(mark);
+		if (cjk) {
+			reply_keep_from(cjk);
+			strip_role_noise();
+			return reply_acc_n > 0;
+		}
+	}
+
+	cjk = first_cjk_utf8(reply_acc);
+	if (cjk) {
+		reply_keep_from(cjk);
+		strip_role_noise();
+		return reply_acc_n > 0;
+	}
+	return 0;
 }
 
 static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
@@ -539,16 +602,15 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 			 * 必须先于 trim_thinking_tail（它会砍掉 mark 之后的正文）。
 			 */
 			if (skip_pre_think && reply_acc_n) {
-				const char *ans =
-					answer_from_think_buf(reply_acc);
-
-				if (ans && *ans) {
-					reply_keep_from(ans);
+				if (salvage_reply_from_think()) {
 					salvage = 1;
 					fprintf(stderr,
-						"rkllm_session: finish salvage answer len=%zu\n",
-						reply_acc_n);
+						"rkllm_session: finish salvage answer len=%zu head='%.48s'\n",
+						reply_acc_n, reply_acc);
 				} else {
+					fprintf(stderr,
+						"rkllm_session: finish think dump len=%zu head='%.80s'\n",
+						reply_acc_n, reply_acc);
 					reply_acc_n = 0;
 					reply_acc[0] = '\0';
 				}
@@ -556,6 +618,17 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 			}
 			trim_thinking_tail();
 			strip_role_noise();
+			/* 仍空：再试一次从残留缓冲抽（非 skip 路径也可能只剩标签） */
+			if (reply_acc_n == 0) {
+				/* already cleared */
+			} else if (find_thinking_mark(reply_acc) == reply_acc) {
+				if (salvage_reply_from_think()) {
+					salvage = 1;
+					fprintf(stderr,
+						"rkllm_session: post-trim salvage len=%zu\n",
+						reply_acc_n);
+				}
+			}
 			empty = (reply_acc_n == 0);
 			if (!empty) {
 				hist_push('a', reply_acc);
@@ -565,6 +638,9 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 					salvage_buf[sizeof(salvage_buf) - 1] =
 						'\0';
 				}
+			} else {
+				fprintf(stderr,
+					"rkllm_session: empty reply after filters\n");
 			}
 			reply_acc_n = 0;
 			reply_acc[0] = '\0';
@@ -765,31 +841,26 @@ static void *worker_main(void *arg)
 		gen_inflight = 1;
 
 		/*
-		 * Qwen3.5: thinking burns tokens + latency. Flag alone is not
-		 * enough after set_chat_template; /no_think is the reliable off.
+		 * Qwen3.5 官方不支持 /think|/no_think 软开关；set_chat_template
+		 * 也会关掉 runtime 对 enable_thinking 的自动处理。靠人设禁思维，
+		 * 并在回调里剥 think 标签。用户原文原样送入，勿追加 /no_think。
 		 */
-		{
-			static char prompt_buf[MSG_MAX + 32];
+		fprintf(stderr, "rkllm_session: ask len=%zu head='%.48s'\n",
+			strlen(user), user);
+		memset(&input, 0, sizeof(input));
+		input.role = "user";
+		input.enable_thinking = false;
+		input.input_type = RKLLM_INPUT_PROMPT;
+		input.prompt_input = user;
 
-			snprintf(prompt_buf, sizeof(prompt_buf), "%s\n/no_think",
-				 user);
-			fprintf(stderr, "rkllm_session: ask len=%zu head='%.48s'\n",
-				strlen(user), user);
-			memset(&input, 0, sizeof(input));
-			input.role = "user";
-			input.enable_thinking = false;
-			input.input_type = RKLLM_INPUT_PROMPT;
-			input.prompt_input = prompt_buf;
+		memset(&infer, 0, sizeof(infer));
+		infer.mode = RKLLM_INFER_GENERATE;
+		infer.keep_history = 1;
 
-			memset(&infer, 0, sizeof(infer));
-			infer.mode = RKLLM_INFER_GENERATE;
-			infer.keep_history = 1;
-
-			/* PHASE7-A：升频 → run → 降回（勿在回调里改频） */
-			npu_dvfs_boost();
-			ret = p_run(handle, &input, &infer, NULL);
-			npu_dvfs_restore();
-		}
+		/* PHASE7-A：升频 → run → 降回（勿在回调里改频） */
+		npu_dvfs_boost();
+		ret = p_run(handle, &input, &infer, NULL);
+		npu_dvfs_restore();
 		gen_inflight = 0;
 		if (ret != 0)
 			tokq_push(TOKQ_ERROR, "rkllm_run 失败");
@@ -1087,7 +1158,7 @@ static int compress_do_work(void)
 
 		snprintf(prompt, sizeof(prompt),
 			 "请用简洁中文总结下列对话：保留要点、结论与未决问题，"
-			 "不超过200字。不要输出思维过程。\n\n%s\n/no_think",
+			 "不超过200字。不要输出思维过程或标签。\n\n%s",
 			 discard);
 		summary_acc_n = 0;
 		summary_acc[0] = '\0';
