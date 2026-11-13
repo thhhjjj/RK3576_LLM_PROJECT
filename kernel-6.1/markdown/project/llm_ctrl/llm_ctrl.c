@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
+#include <linux/of.h>
 #include <linux/thermal.h>
 #include <linux/device.h>
 #include <linux/sysfs.h>
@@ -23,6 +24,12 @@
 #define LLM_CTRL_POLL_MS		1000
 #define LLM_CTRL_HYST_C			2
 #define LLM_CTRL_ZONE_TYPE		"npu-thermal"
+
+static const struct of_device_id llm_ctrl_of_match[] = {
+	{ .compatible = "thhhjjj,llm_ctrl", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, llm_ctrl_of_match);
 
 static int threshold_c = LLM_CTRL_DEFAULT_THRESHOLD_C;
 module_param(threshold_c, int, 0644);
@@ -39,8 +46,6 @@ struct llm_ctrl {
 };
 
 static struct llm_ctrl *g_ctrl;
-static struct platform_device *g_pdev;
-
 static const struct genl_multicast_group llm_ctrl_mcgrps[] = {
 	{ .name = LLM_CTRL_MCGRP_EVENTS, },
 };
@@ -253,6 +258,7 @@ static struct platform_driver llm_ctrl_driver = {
 	.remove = llm_ctrl_remove,
 	.driver = {
 		.name = "llm_ctrl",
+		.of_match_table = llm_ctrl_of_match,
 	},
 };
 
@@ -275,34 +281,19 @@ static int __init llm_ctrl_init(void)
 
 	ret = platform_driver_register(&llm_ctrl_driver);
 	if (ret)
-		goto err_genl;
-
-	g_pdev = platform_device_register_simple("llm_ctrl", -1, NULL, 0);
-	if (IS_ERR(g_pdev)) {
-		ret = PTR_ERR(g_pdev);
-		g_pdev = NULL;
-		goto err_drv;
-	}
-
-	return 0;
-
-err_drv:
-	platform_driver_unregister(&llm_ctrl_driver);
-err_genl:
-	genl_unregister_family(&llm_ctrl_gnl_family);
+		genl_unregister_family(&llm_ctrl_gnl_family);
 	return ret;
 }
 
 static void __exit llm_ctrl_exit(void)
 {
-	if (g_pdev)
-		platform_device_unregister(g_pdev);
 	platform_driver_unregister(&llm_ctrl_driver);
 	genl_unregister_family(&llm_ctrl_gnl_family);
 }
 
 module_init(llm_ctrl_init);
 module_exit(llm_ctrl_exit);
+
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Moments");

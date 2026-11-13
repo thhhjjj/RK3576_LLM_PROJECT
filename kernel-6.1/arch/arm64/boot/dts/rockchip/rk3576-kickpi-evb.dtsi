@@ -14,6 +14,11 @@
 #include "rk3576-evb-input-keymap.dtsi"
 
 / {
+	llm_ctrl: llm-ctrl {
+		compatible = "thhhjjj,llm_ctrl";
+		status = "okay";
+	};
+	
 	adc_keys: adc-keys {
 		compatible = "adc-keys";
 		status = "disabled";
