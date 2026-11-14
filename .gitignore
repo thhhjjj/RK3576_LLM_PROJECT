@@ -4,3 +4,6 @@
 # local/tooling noise
 .must_change_repo/
 lastonce/
+
+# SoC-wide pinmux catalog (reference only; do not overlay SDK)
+kernel-6.1/arch/arm64/boot/dts/rockchip/rk3576-pinctrl.dtsi

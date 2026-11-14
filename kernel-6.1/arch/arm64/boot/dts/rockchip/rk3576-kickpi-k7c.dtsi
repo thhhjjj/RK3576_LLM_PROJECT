@@ -11,13 +11,13 @@
 #include "rk3576-kickpi-evb.dtsi"
 #include "rk3576-rk806.dtsi"
 
-#include "rk3576-kickpi-lcd-hdmi.dtsi"
+//#include "rk3576-kickpi-lcd-hdmi.dtsi"
 
 // #include "rk3576-kickpi-lcd-mipi-8-800-1280-MX080B2140.dtsi"
 // #include "rk3576-kickpi-lcd-mipi-10.1-800-1280-AT101DS40I.dtsi"
 // #include "rk3576-kickpi-lcd-mipi-10.1-800-1280-MX101BA1340.dtsi"
-#include "rk3576-kickpi-lcd-mipi-5-720-1280-F050008M01.dtsi"
-
+// #include "rk3576-kickpi-lcd-mipi-5-720-1280-F050008M01.dtsi"
+#include "self_mipi_5_720_1280.dtsi"
 /* PHASE1: DP / 有线网 / PCIe / 扩展座 / 红外 / 摄像头 暂不启用 */
 // #include "rk3576-kickpi-lcd-dp.dtsi"
 
