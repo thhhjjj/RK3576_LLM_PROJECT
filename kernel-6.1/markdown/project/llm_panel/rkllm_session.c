@@ -187,9 +187,14 @@ static char *find_thinking_mark(char *s)
 	static const char *marks[] = {
 		"Thinking Process",
 		"thinking process",
+		"Thinking:",
+		"**Thinking**",
 		"<think>",
+		"<thinking>",
 		"\n思维过程",
 		"\n思维链",
+		"思维过程",
+		"思维链",
 		NULL,
 	};
 	char *best = NULL;
@@ -202,6 +207,63 @@ static char *find_thinking_mark(char *s)
 			best = p;
 	}
 	return best;
+}
+
+/*
+ * Qwen3.5 常把对人设的英文拆解当「思维」：主人" - Master/Owner) / Task: Respond…
+ * 这种不能当最终答案上屏。
+ */
+static int looks_like_prompt_meta(const char *s)
+{
+	static const char *bad[] = {
+		"Master/Owner",
+		"Master / Owner",
+		"\" - Master",
+		"*   Task",
+		"*  Task",
+		"Task: Respond",
+		"Task:Respond",
+		"system prompt",
+		"System prompt",
+		"Thinking Process",
+		"thinking process",
+		"Let's break down",
+		"Let me break down",
+		"The user said",
+		"The user's message",
+		"I need to respond",
+		"Respond according",
+		NULL,
+	};
+	int i;
+
+	if (!s || !s[0])
+		return 0;
+	for (i = 0; bad[i]; i++) {
+		if (strstr(s, bad[i]))
+			return 1;
+	}
+	/* 中文词后紧跟英文释义：主人" - … */
+	if (strstr(s, "\" - ") || strstr(s, "\" — "))
+		return 1;
+	return 0;
+}
+
+/* 候选答案可用才返回 1（已写入 reply_acc） */
+static int try_keep_answer(const char *ans)
+{
+	if (!ans || !ans[0])
+		return 0;
+	if (looks_like_prompt_meta(ans))
+		return 0;
+	reply_keep_from(ans);
+	strip_role_noise();
+	if (reply_acc_n == 0 || looks_like_prompt_meta(reply_acc)) {
+		reply_acc_n = 0;
+		reply_acc[0] = '\0';
+		return 0;
+	}
+	return 1;
 }
 
 static const char *after_think_close(const char *s)
@@ -230,8 +292,17 @@ static const char *after_think_close(const char *s)
 
 static int has_open_think_tag(const char *s)
 {
-	const char *open = strstr(s, "<think>");
+	const char *p = s;
+	const char *open = NULL;
 
+	while ((p = strstr(p, "<think"))) {
+		if (strncmp(p, "<thinking>", 10) == 0 ||
+		    strncmp(p, "<think>", 7) == 0) {
+			open = p;
+			break;
+		}
+		p++;
+	}
 	if (!open)
 		return 0;
 	return after_think_close(open) == NULL;
@@ -374,7 +445,8 @@ static void strip_role_noise(void)
 
 /*
  * FINISH 兜底：Qwen3.5 常只开 <think> 不关就把答案写在里面，
- * 流式抽不出 → 结束时再剥标签 / 取首个 CJK。
+ * 流式抽不出 → 结束时再剥标签 / 取首个可用 CJK。
+ * 拒绝「主人\" - Master」这类人设拆解。
  */
 static int salvage_reply_from_think(void)
 {
@@ -384,26 +456,24 @@ static int salvage_reply_from_think(void)
 	char *mark;
 
 	ans = answer_from_think_buf(reply_acc);
-	if (ans && *ans) {
-		reply_keep_from(ans);
-		strip_role_noise();
-		return reply_acc_n > 0;
-	}
+	if (try_keep_answer(ans))
+		return 1;
 
 	mark = find_thinking_mark(reply_acc);
 	if (mark && mark[0] == '<') {
-		p = mark + strlen("<think>");
+		/* `<think>` 是 `<thinking>` 前缀，必须先匹配长标签 */
+		if (strncmp(mark, "<thinking>", 10) == 0)
+			p = mark + 10;
+		else if (strncmp(mark, "<think>", 7) == 0)
+			p = mark + 7;
+		else
+			p = mark;
 		while (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t')
 			p++;
 		cjk = first_cjk_utf8(p);
-		if (cjk)
-			reply_keep_from(cjk);
-		else if (*p)
-			reply_keep_from(p);
-		else
-			return 0;
-		strip_role_noise();
-		return reply_acc_n > 0;
+		if (try_keep_answer(cjk ? cjk : (*p ? p : NULL)))
+			return 1;
+		return 0;
 	}
 	if (mark && mark[0] != '<') {
 		p = strstr(mark, "\n\n");
@@ -412,26 +482,29 @@ static int salvage_reply_from_think(void)
 			while (*p == '\n' || *p == '\r' || *p == ' ' ||
 			       *p == '\t')
 				p++;
-			if (*p) {
-				reply_keep_from(p);
-				strip_role_noise();
-				return reply_acc_n > 0;
-			}
+			if (try_keep_answer(*p ? p : NULL))
+				return 1;
 		}
+		/* 从 mark 后扫多个 CJK 起点，跳过 meta 段 */
 		cjk = first_cjk_utf8(mark);
-		if (cjk) {
-			reply_keep_from(cjk);
-			strip_role_noise();
-			return reply_acc_n > 0;
+		while (cjk) {
+			if (try_keep_answer(cjk))
+				return 1;
+			cjk = first_cjk_utf8(cjk + 3);
 		}
 	}
 
 	cjk = first_cjk_utf8(reply_acc);
-	if (cjk) {
-		reply_keep_from(cjk);
-		strip_role_noise();
-		return reply_acc_n > 0;
+	while (cjk) {
+		if (try_keep_answer(cjk))
+			return 1;
+		cjk = first_cjk_utf8(cjk + 3);
 	}
+	fprintf(stderr,
+		"rkllm_session: salvage rejected meta/empty head='%.64s'\n",
+		reply_acc);
+	reply_acc_n = 0;
+	reply_acc[0] = '\0';
 	return 0;
 }
 
@@ -483,7 +556,7 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 			return 0;
 		}
 
-		/* Think-first: 继续攒，直到能抽出答案再上屏 */
+		/* Think-first: 继续攒，直到能抽出「非人设拆解」答案再上屏 */
 		if (skip_pre_think) {
 			const char *ans;
 
@@ -494,12 +567,19 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 				reply_acc[reply_acc_n] = '\0';
 			}
 			ans = answer_from_think_buf(reply_acc);
-			if (!ans || !ans[0]) {
+			if (!ans || !ans[0] || looks_like_prompt_meta(ans)) {
 				pthread_mutex_unlock(&reply_lock);
 				return 0;
 			}
 			skip_pre_think = 0;
 			reply_keep_from(ans);
+			strip_role_noise();
+			if (reply_acc_n == 0 ||
+			    looks_like_prompt_meta(reply_acc)) {
+				skip_pre_think = 1;
+				pthread_mutex_unlock(&reply_lock);
+				return 0;
+			}
 			gen_tokens++;
 			pthread_mutex_unlock(&reply_lock);
 			tokq_push(TOKQ_TOKEN, reply_acc);
@@ -531,14 +611,19 @@ static int result_cb(RKLLMResult *result, void *userdata, LLMCallState state)
 			if (keep < THINK_ANSWER_MIN) {
 				/* 仅当已见到闭合标签后的正文才立刻上屏 */
 				ans = answer_from_think_buf(reply_acc);
-				if (ans && *ans && after_think_close(reply_acc)) {
+				if (ans && *ans && after_think_close(reply_acc) &&
+				    !looks_like_prompt_meta(ans)) {
 					skip_pre_think = 0;
 					reply_keep_from(ans);
-					pthread_mutex_unlock(&reply_lock);
-					tokq_push(TOKQ_TOKEN, reply_acc);
-					fprintf(stderr,
-						"rkllm_session: skip leading think (inline answer)\n");
-					return 0;
+					strip_role_noise();
+					if (reply_acc_n &&
+					    !looks_like_prompt_meta(reply_acc)) {
+						pthread_mutex_unlock(&reply_lock);
+						tokq_push(TOKQ_TOKEN, reply_acc);
+						fprintf(stderr,
+							"rkllm_session: skip leading think (inline answer)\n");
+						return 0;
+					}
 				}
 				skip_pre_think = 1;
 				pthread_mutex_unlock(&reply_lock);
